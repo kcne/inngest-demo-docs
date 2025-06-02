@@ -11,7 +11,11 @@ const config: DocsThemeConfig = {
   },
   docsRepositoryBase: 'https://github.com/shuding/nextra-docs-template',
   footer: {
+<<<<<<< HEAD
     text: 'Nextra Docs Template',
+=======
+    content: 'Nextra Docs Template',
+>>>>>>> contributor/main
   },
 }
 
