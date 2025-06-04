@@ -1,11 +1,87 @@
 # Introduction
- 
-Welcome to Nextra! This is a basic docs template. You can use it as a starting point for your own project :)
 
-## What is Nextra?
+**Inngest** transforms the way developers build reliable background jobs and workflows. Instead of wrestling with queues, workers, and infrastructure, you write simple functions that automatically become durable, scalable workflows.
 
-A **simple**, **powerful** and **flexible** site generation framework with everything you love from Next.js.
+## What is Inngest?
+**Inngest** is an **[event-driven](https://en.wikipedia.org/wiki/Event-driven_programming) [durable execution](https://temporal.io/blog/what-is-durable-execution) platform** that combines two powerful concepts:
 
-## Documentation
+**[Event-Driven Architecture](https://en.wikipedia.org/wiki/Event-driven_architecture)**: Your application sends [events](/concepts/events) when things happen (user signup, order placed, file uploaded). [Functions](/concepts/functions) automatically trigger in response to these events.
 
-The documentation is available at [https://nextra.site](https://nextra.site).
+**[Durable Execution](https://docs.temporal.io/workflows#durable-execution)**: Functions are broken into [steps](/concepts/steps) that create checkpoints. If something fails, only the failed step retries - successful steps never re-run. <br/><br/>
+
+<img src="/introduction.png" alt="Inngest Introduction" />
+
+```typescript
+export const processOrder = inngest.createFunction(
+  { id: "process-order" },
+  { event: "order/created" },
+  async ({ event, step }) => {
+    // Each step creates a checkpoint
+    const payment = await step.run("charge-card", () => 
+      stripe.charges.create(event.data.payment)
+    );
+    
+    const shipment = await step.run("create-shipment", () => 
+      shipping.create(event.data.items)
+    );
+    
+    // If shipment fails, payment doesn't re-run
+    await step.run("send-confirmation", () => 
+      email.send(event.data.customerEmail, { payment, shipment })
+    );
+  }
+);
+```
+
+## Why Inngest?
+
+| Benefit | Key Features |
+|---------|-------------|
+| **Less Code** | Traditional background job systems require 100+ lines of boilerplate. Inngest functions are just regular TypeScript. |
+| **Built-in Reliability** | Automatic retries with exponential backoff • State persistence across failures • Exactly-once execution • Built-in observability |
+| **Scale Without Complexity** | Serverless-first (runs anywhere) • Flow control (concurrency, rate limiting, batching) • Multi-tenant isolation • Cost optimization |
+| **Developer Experience** | TypeScript-first with full type safety • Local development with Dev Server • Visual debugging • Version control friendly |
+
+## Quick Start
+
+<div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem', marginTop: '1.5rem' }}>
+
+<div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '1.5rem' }}>
+  <h3 style={{ marginTop: 0, color: '#2563eb' }}>🎯 Jump into core concepts</h3>
+  <p style={{ marginBottom: '1rem' }}>Start with the big picture and understand how Inngest works.</p>
+  <a href="/quick-overview" style={{ fontWeight: 'bold', textDecoration: 'none', color: '#2563eb' }}>Quick Overview →</a>
+</div>
+
+<div style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '1.5rem' }}>
+  <h3 style={{ marginTop: 0, color: '#059669' }}>🚀 Ready to start building</h3>
+  <p style={{ marginBottom: '1rem' }}>Jump straight into examples and start building workflows.</p>
+  <a href="/quick-start" style={{ fontWeight: 'bold', textDecoration: 'none', color: '#059669' }}>Quick Start →</a>
+</div>
+
+</div>
+
+## Learn More
+
+**Framework-Specific Getting Started:**
+- **[Next.js Quick Start](https://www.inngest.com/docs/getting-started/nextjs-quick-start)** - Full-stack React applications
+- **[Node.js Quick Start](https://www.inngest.com/docs/getting-started/nodejs-quick-start)** - Express and other Node.js frameworks
+- **[Python Quick Start](https://www.inngest.com/docs/getting-started/python-quick-start)** - FastAPI, Flask, and Django applications
+- **[Go Quick Start](https://www.inngest.com/docs/getting-started/go-quick-start)** - High-performance Go web services
+
+**Platform & Deployment:**
+- **[Local Development](https://www.inngest.com/docs/local-development)** - Dev server setup and testing
+- **[Deployment Options](https://www.inngest.com/docs/deploy)** - Deploy to [Vercel](https://www.inngest.com/docs/deploy/vercel), [Netlify](https://www.inngest.com/docs/deploy/netlify), [Cloudflare](https://www.inngest.com/docs/deploy/cloudflare), and more
+- **[Environment Management](https://www.inngest.com/docs/platform/environments)** - Production, staging, and branch environments
+- **[Function Monitoring](https://www.inngest.com/docs)** - Function logs, metrics, and debugging
+
+**Advanced Features:**
+- **[Middleware](https://www.inngest.com/docs/features/middleware)** - Add authentication, logging, and custom behavior
+- **[Security & Signing Keys](https://www.inngest.com/docs/platform/signing-keys)** - Secure communication between Inngest and your app
+
+## Community & Resources
+
+- **[Discord Community](https://www.inngest.com/discord)** - Get help and connect with other developers
+- **[GitHub Repository](https://github.com/inngest/inngest-js)** - Contribute to the open-source SDK
+- **[Blog](https://www.inngest.com/blog)** - Best practices, tutorials, and deep dives
+- **[Status Page](https://status.inngest.com/)** - Monitor Inngest platform health
+- **[Support Center](https://www.inngest.com/support)** - Documentation and troubleshooting

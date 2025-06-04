@@ -1,0 +1,507 @@
+# Flow Control
+
+Flow Control in Inngest provides sophisticated execution management that scales with your application - from simple rate limiting to complex multi-tenant orchestration. Instead of manually managing worker pools and queues, you declare your constraints and Inngest enforces them intelligently. <br/> <br/>
+
+<img src="/flow-control.png" alt="Flow Control" style={{ width: '70%', height: 'auto', display: 'block', margin: '0 auto' }} />
+
+
+## Core Concepts
+
+Flow Control solves critical production challenges that arise when applications scale beyond simple use cases. Without proper flow control, your functions can overwhelm external APIs, consume excessive resources, or create unfair resource distribution across users. Understanding these challenges helps you choose the right flow control mechanisms for your specific needs.
+
+- **Traffic spikes** overwhelming external APIs
+- **Resource contention** when multiple functions compete  
+- **Rate limits** from third-party services causing failures
+- **Cost escalation** from excessive function executions
+- **Unfair resource distribution** in multi-tenant applications
+
+## Concurrency Control
+
+Limit how many function instances run simultaneously to protect your infrastructure and external services. Concurrency control prevents resource exhaustion, reduces contention for shared resources, and ensures predictable performance under load. This is essential for functions that perform intensive operations, call external APIs, or access shared databases where too many simultaneous operations could cause failures.
+
+### Global Concurrency
+
+Set an absolute limit on concurrent executions across your entire system. This pattern protects downstream services from being overwhelmed by too many simultaneous requests. Global concurrency is particularly useful for functions that call external APIs with strict rate limits or perform resource-intensive operations like image processing or large data transformations.
+
+```typescript
+export const heavyTask = inngest.createFunction(
+  {
+    id: "heavy-computation",
+    concurrency: { limit: 5 }  // Max 5 concurrent executions globally
+  },
+  { event: "compute/requested" },
+  async ({ event, step }) => {
+    await step.run("process", () => 
+      performHeavyComputation(event.data)
+    );
+  }
+);
+```
+
+### Per-User Concurrency
+
+Prevent one user from overwhelming your system while allowing other users to proceed normally. This pattern ensures fairness in multi-user systems and prevents individual users from monopolizing resources. Per-user concurrency is crucial for SaaS applications, content processing systems, or any scenario where user-generated events could create uneven load distribution.
+
+```typescript
+export const userTask = inngest.createFunction(
+  {
+    id: "user-task",
+    concurrency: {
+      limit: 3,                    // Max 3 concurrent executions
+      key: "event.data.userId"     // Per user
+    }
+  },
+  { event: "task/requested" },
+  async ({ event, step }) => {
+    await step.run("process-user-task", () =>
+      processUserTask(event.data.userId, event.data.taskData)
+    );
+  }
+);
+```
+
+### Multi-Tenant Isolation
+
+Ensure tenant isolation and prevent one tenant from affecting others' performance. This pattern is essential for B2B SaaS applications where different organizations share the same infrastructure. Multi-tenant concurrency control maintains service level agreements and prevents noisy neighbor problems in shared environments.
+
+```typescript
+export const tenantWorkflow = inngest.createFunction(
+  {
+    id: "tenant-workflow",
+    concurrency: {
+      limit: 10,                     // Max 10 per tenant
+      key: "event.data.tenantId"
+    }
+  },
+  { event: "tenant/action" },
+  async ({ event, step }) => {
+    const data = await step.run("fetch-tenant-data", () =>
+      getTenantData(event.data.tenantId)
+    );
+
+    await step.run("process-tenant-action", () =>
+      processTenantAction(event.data.tenantId, data)
+    );
+  }
+);
+```
+
+## Rate Limiting
+
+Control execution frequency over time to respect API limits and manage costs. Rate limiting spreads function executions across time periods, preventing burst traffic from overwhelming external services or exceeding usage quotas. This is crucial for maintaining good relationships with third-party services and avoiding unexpected costs from excessive API calls.
+
+### Basic Rate Limiting
+
+Apply a simple time-based limit to control overall execution frequency. This pattern helps you stay within API quotas, manage costs, and maintain predictable system behavior. Basic rate limiting is perfect for functions that sync data with external services or perform operations that have natural time-based constraints.
+
+```typescript
+export const apiSync = inngest.createFunction(
+  {
+    id: "api-sync",
+    rateLimit: {
+      limit: 1000,        // 1000 executions
+      period: "1h"        // Per hour
+    }
+  },
+  { event: "sync/requested" },
+  async ({ event, step }) => {
+    await step.run("sync-data", () =>
+      externalAPI.syncData(event.data)
+    );
+  }
+);
+```
+
+### Per-API-Key Rate Limiting
+
+Respect third-party service limits by applying rate limits per API key or account. This pattern ensures you don't exceed the specific limits imposed by external services, which often vary by subscription tier or account type. Per-API-key rate limiting is essential when integrating with services like Stripe, Slack, or other APIs that have account-specific rate limits.
+
+```typescript
+export const stripeSync = inngest.createFunction(
+  {
+    id: "stripe-sync",
+    rateLimit: {
+      limit: 100,                      // Stripe allows 100 requests
+      period: "1s",                    // Per second
+      key: "event.data.stripeAccountId"
+    }
+  },
+  { event: "stripe/sync" },
+  async ({ event, step }) => {
+    await step.run("sync-stripe", () =>
+      stripeAPI.sync(event.data.stripeAccountId)
+    );
+  }
+);
+```
+
+### Per-User Rate Limiting
+
+Prevent abuse while maintaining fairness across users by limiting executions per user over time. This pattern protects your system from individual users who might generate excessive events, either intentionally or due to misconfigured applications. Per-user rate limiting is crucial for user-facing features like notifications, report generation, or any action that users can trigger directly.
+
+```typescript
+export const sendNotification = inngest.createFunction(
+  {
+    id: "send-notification",
+    rateLimit: {
+      limit: 50,                    // 50 notifications
+      period: "1h",                 // Per hour
+      key: "event.data.userId"      // Per user
+    }
+  },
+  { event: "notification/send" },
+  async ({ event, step }) => {
+    await step.run("send", () =>
+      notificationService.send(event.data.userId, event.data.message)
+    );
+  }
+);
+```
+
+## Event Batching
+
+Process multiple events together for efficiency, reducing costs and improving performance. Batching combines individual events into groups before processing, which is particularly effective for operations that benefit from bulk processing. This pattern can significantly reduce function execution costs and improve throughput for high-volume event streams.
+
+### Size-Based Batching
+
+Wait until a specific number of events accumulate before processing them together. This pattern ensures efficient bulk operations and reduces per-event processing overhead. Size-based batching is ideal for operations like bulk email sending, database batch inserts, or any scenario where processing multiple items together is more efficient than individual processing.
+
+```typescript
+export const bulkEmail = inngest.createFunction(
+  {
+    id: "bulk-email",
+    batchEvents: {
+      maxSize: 100        // Process up to 100 events together
+    }
+  },
+  { event: "email/queue" },
+  async ({ events, step }) => {  // Note: events array
+    const emailData = events.map(e => e.data);
+    
+    await step.run("send-bulk", () =>
+      emailService.sendBulk(emailData)
+    );
+  }
+);
+```
+
+### Time-Based Batching
+
+Process events at regular intervals regardless of how many have accumulated. This pattern ensures timely processing even for low-volume event streams and provides predictable processing schedules. Time-based batching is perfect for log processing, analytics aggregation, or any workflow that needs to run on a schedule even with variable event volumes.
+
+```typescript
+export const logProcessor = inngest.createFunction(
+  {
+    id: "log-processor",
+    batchEvents: {
+      timeout: "30s"      // Process every 30 seconds
+    }
+  },
+  { event: "log/entry" },
+  async ({ events, step }) => {
+    await step.run("process-logs", () =>
+      logService.processBatch(events.map(e => e.data))
+    );
+  }
+);
+```
+
+### Combined Batching
+
+Combine size and time limits to get optimal processing behavior for varying event volumes. This approach processes events when either the size limit is reached or the timeout expires, whichever comes first. Combined batching provides the best balance between efficiency and timeliness, adapting to both high and low volume periods automatically.
+
+```typescript
+export const analyticsProcessor = inngest.createFunction(
+  {
+    id: "analytics-processor",
+    batchEvents: {
+      maxSize: 1000,      // Ideal batch size
+      timeout: "60s"      // Don't wait more than 1 minute
+    }
+  },
+  { event: "analytics/track" },
+  async ({ events, step }) => {
+    await step.run("process-analytics", () =>
+      analytics.processBatch(events.map(e => e.data))
+    );
+  }
+);
+```
+
+## Debouncing
+
+Delay execution until activity settles, preventing excessive processing during periods of rapid changes. Debouncing waits for a quiet period before executing, which is perfect for scenarios where rapid successive events should result in only one processing action. This pattern is essential for search indexing, file processing, or any situation where you want to avoid redundant work during busy periods.
+
+```typescript
+export const reindexDocument = inngest.createFunction(
+  {
+    id: "reindex-document",
+    debounce: {
+      period: "5m",                  // Wait 5 minutes after last event
+      key: "event.data.documentId"   // Per document
+    }
+  },
+  { event: "document/changed" },
+  async ({ event, step }) => {
+    // Only runs after document stops changing for 5 minutes
+    await step.run("reindex", () =>
+      searchIndex.reindex(event.data.documentId)
+    );
+  }
+);
+```
+
+## Throttling
+
+Smooth out bursty traffic by controlling the rate of execution while allowing occasional bursts. Throttling differs from rate limiting by providing more flexible burst handling, allowing short-term spikes while maintaining long-term rate control. This pattern is ideal for handling variable workloads where you want to accommodate natural traffic patterns while preventing system overload.
+
+```typescript
+export const expensiveOperation = inngest.createFunction(
+  {
+    id: "expensive-operation",
+    throttle: {
+      limit: 5,          // Max 5 executions
+      period: "1m",      // Per minute
+      burst: 10          // Allow bursts up to 10
+    }
+  },
+  { event: "operation/requested" },
+  async ({ event, step }) => {
+    await step.run("expensive-work", () =>
+      performExpensiveOperation(event.data)
+    );
+  }
+);
+```
+
+## Priority Scheduling
+
+Control execution order by assigning priorities to different functions or event types. Priority scheduling ensures that critical operations execute before less important ones during periods of high load. This pattern is essential for systems that need to maintain responsiveness for important user actions while still processing background tasks efficiently.
+
+```typescript
+// High priority - critical user actions
+export const criticalTask = inngest.createFunction(
+  {
+    id: "critical-task",
+    priority: 100        // Higher number = higher priority
+  },
+  { event: "user/critical-action" },
+  async ({ event, step }) => {
+    await step.run("handle-critical", () =>
+      handleCriticalAction(event.data)
+    );
+  }
+);
+
+// Lower priority - background processing
+export const backgroundTask = inngest.createFunction(
+  {
+    id: "background-task", 
+    priority: 10         // Lower priority
+  },
+  { event: "background/process" },
+  async ({ event, step }) => {
+    await step.run("background-work", () =>
+      performBackgroundWork(event.data)
+    );
+  }
+);
+```
+
+## Advanced Patterns
+
+Advanced flow control patterns combine multiple mechanisms to handle complex production scenarios. These patterns demonstrate how to build sophisticated execution management that adapts to different conditions, user types, and system states. Understanding these patterns helps you design robust systems that can handle the complexity and variability of real-world applications.
+
+### Multi-Dimensional Flow Control
+
+Combine multiple controls for sophisticated management that addresses different aspects of system protection simultaneously. This pattern applies concurrency limits, rate limits, priority scheduling, and batching together to create comprehensive execution management. Multi-dimensional control is essential for complex applications that need to balance multiple competing concerns like fairness, performance, and resource protection.
+
+```typescript
+export const userContentProcessor = inngest.createFunction(
+  {
+    id: "user-content-processor",
+    concurrency: {
+      limit: 5,                      // Max 5 per user
+      key: "event.data.userId"
+    },
+    rateLimit: {
+      limit: 100,                    // Max 100 per hour per user
+      period: "1h",
+      key: "event.data.userId"
+    },
+    priority: 50,                    // Medium priority
+    batchEvents: {
+      maxSize: 10,                   // Batch up to 10 items
+      timeout: "30s"
+    }
+  },
+  { event: "content/process" },
+  async ({ events, step }) => {
+    const userId = events[0].data.userId;
+    const contentItems = events.map(e => e.data.content);
+
+    await step.run("process-content-batch", () =>
+      contentProcessor.processBatch(userId, contentItems)
+    );
+  }
+);
+```
+
+### Dynamic Flow Control
+
+Adjust limits based on system conditions, time of day, or environment to optimize resource usage. Dynamic flow control allows your system to adapt its behavior based on external factors like server load, time zones, or deployment environment. This pattern enables more efficient resource utilization and can help reduce costs by scaling limits appropriately for different conditions.
+
+```typescript
+export const adaptiveProcessor = inngest.createFunction(
+  {
+    id: "adaptive-processor",
+    concurrency: {
+      limit: process.env.NODE_ENV === "production" ? 20 : 5,
+      key: "event.data.region"
+    },
+    rateLimit: {
+      // Higher limits during off-peak hours
+      limit: new Date().getHours() < 9 || new Date().getHours() > 17 ? 200 : 100,
+      period: "1h"
+    }
+  },
+  { event: "process/adaptive" },
+  async ({ event, step }) => {
+    await step.run("adaptive-processing", () =>
+      adaptiveService.process(event.data)
+    );
+  }
+);
+```
+
+### Cascading Flow Control
+
+Apply different limits for different event types or user tiers to create tiered service levels. This pattern allows you to provide different levels of service based on business rules, user subscriptions, or event importance. Cascading flow control is essential for SaaS applications that need to provide different service levels to different customer tiers while maintaining system stability.
+
+```typescript
+// High-value customer events - higher limits
+export const premiumProcessor = inngest.createFunction(
+  {
+    id: "premium-processor",
+    concurrency: { limit: 10 },
+    rateLimit: { limit: 1000, period: "1h" }
+  },
+  { event: "premium/action" },
+  async ({ event, step }) => {
+    await step.run("premium-processing", () =>
+      processPremiumAction(event.data)
+    );
+  }
+);
+
+// Regular customer events - standard limits
+export const standardProcessor = inngest.createFunction(
+  {
+    id: "standard-processor", 
+    concurrency: { limit: 5 },
+    rateLimit: { limit: 500, period: "1h" }
+  },
+  { event: "standard/action" },
+  async ({ event, step }) => {
+    await step.run("standard-processing", () =>
+      processStandardAction(event.data)
+    );
+  }
+);
+```
+
+## Cost Optimization Patterns
+
+Cost optimization patterns focus on reducing execution costs while maintaining functionality and performance. These patterns leverage batching, timing controls, and intelligent scheduling to minimize the number of function executions and optimize resource usage. Understanding these patterns is crucial for applications that process high volumes of events and need to control operational costs.
+
+### Reduce Function Executions
+
+Use batching to reduce costs by processing more events per function execution, dramatically reducing per-execution overhead. This pattern can reduce costs by 10x or more for high-volume applications by maximizing the work done in each billable execution. Large batch sizes are particularly effective for analytics, data processing, and bulk operations where individual event processing has minimal value.
+
+```typescript
+export const costOptimizedAnalytics = inngest.createFunction(
+  {
+    id: "cost-optimized-analytics",
+    batchEvents: {
+      maxSize: 1000,       // Large batches
+      timeout: "5m"        // Longer timeouts
+    },
+    rateLimit: {
+      limit: 12,           // Only 12 executions per hour
+      period: "1h"         // (every 5 minutes max)
+    }
+  },
+  { event: "analytics/event" },
+  async ({ events, step }) => {
+    // Process 1000 events in a single execution
+    await step.run("bulk-analytics", () =>
+      analytics.processBulk(events.map(e => e.data))
+    );
+  }
+);
+```
+
+### Off-Peak Processing
+
+Schedule intensive work during cheaper hours or lower system load periods to optimize costs and performance. This pattern takes advantage of time-based pricing differences and natural traffic patterns to reduce operational costs. Off-peak processing is particularly effective for data processing, report generation, and maintenance tasks that don't require immediate execution.
+
+```typescript
+export const reportGeneration = inngest.createFunction(
+  {
+    id: "report-generation",
+    throttle: {
+      // Allow more during off-peak (6 PM - 6 AM)
+      limit: isOffPeak() ? 10 : 2,
+      period: "1h"
+    }
+  },
+  { event: "report/generate" },
+  async ({ event, step }) => {
+    await step.run("generate-report", () =>
+      generateReport(event.data.reportId)
+    );
+  }
+);
+```
+
+import { Callout } from 'nextra/components'
+
+<Callout type="info">
+**Pro Tip**: Start with conservative limits and increase based on monitoring. It's easier to relax constraints than to recover from system overload.
+</Callout>
+
+<Callout type="warning">
+**Important**: Flow control is enforced per environment. Test your limits in staging before deploying to production.
+</Callout>
+
+## Monitoring and Debugging
+
+Track how flow control affects your functions to optimize performance and identify bottlenecks. Monitoring flow control helps you understand queue depths, execution delays, and resource utilization patterns. Proper monitoring is essential for tuning your flow control settings and ensuring they're providing the desired protection without unnecessarily restricting performance.
+
+```typescript
+export const monitoredFunction = inngest.createFunction(
+  {
+    id: "monitored-function",
+    concurrency: { limit: 5, key: "event.data.userId" },
+    rateLimit: { limit: 100, period: "1h", key: "event.data.userId" }
+  },
+  { event: "monitored/event" },
+  async ({ event, step, logger }) => {
+    // Log when execution starts (useful for delay analysis)
+    logger.info("Function execution started", {
+      userId: event.data.userId,
+      timestamp: new Date().toISOString()
+    });
+
+    await step.run("monitored-work", () =>
+      performMonitoredWork(event.data)
+    );
+  }
+);
+```
+
+## Next Steps
+
+- Learn about [Functions](/concepts/functions) that use flow control
+- Explore [Real-World Examples](/quick-start/examples) of flow control patterns
+- Check out [Best Practices](/quick-start/best-practices) for production deployments 

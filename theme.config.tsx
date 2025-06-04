@@ -2,20 +2,16 @@ import React from 'react'
 import { DocsThemeConfig } from 'nextra-theme-docs'
 
 const config: DocsThemeConfig = {
-  logo: <span>My Project</span>,
+  logo: <span>Inngest Core</span>,
   project: {
-    link: 'https://github.com/shuding/nextra-docs-template',
+    link: 'https://github.com/inngest',
   },
   chat: {
-    link: 'https://discord.com',
+    link: 'https://discord.com/invite/mPfcyDEdpx',
   },
-  docsRepositoryBase: 'https://github.com/shuding/nextra-docs-template',
+  docsRepositoryBase: 'https://github.com/inngest/website',
   footer: {
-<<<<<<< HEAD
-    text: 'Nextra Docs Template',
-=======
-    content: 'Nextra Docs Template',
->>>>>>> contributor/main
+    content: 'Inngest Docs',
   },
 }
 

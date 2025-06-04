@@ -1,11 +1,3 @@
-<<<<<<< HEAD
-const withNextra = require('nextra')({
-  theme: 'nextra-theme-docs',
-  themeConfig: './theme.config.tsx',
-})
-
-module.exports = withNextra()
-=======
 import nextra from 'nextra'
 
 const withNextra = nextra({
@@ -14,4 +6,3 @@ const withNextra = nextra({
 })
 
 export default withNextra()
->>>>>>> contributor/main

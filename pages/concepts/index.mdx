@@ -1,0 +1,129 @@
+# Core Concepts
+
+Understanding Inngest's core concepts is the key to building reliable, scalable workflows. Each concept builds on the others to create a powerful system that eliminates the complexity of traditional [background job processing](https://en.wikipedia.org/wiki/Job_queue) and [message queue systems](https://en.wikipedia.org/wiki/Message_queue).
+
+## Building Blocks
+Inngest's core concepts work together to create reliable, [event-driven workflows](https://en.wikipedia.org/wiki/Event-driven_architecture):
+
+1. **[Events](/concepts/events)** are triggers that notify your system when something happens, like a user signup or order placement. They decouple your application code from background processing and follow [event-driven architecture](https://en.wikipedia.org/wiki/Event-driven_architecture) principles.
+
+2. **[Functions](/concepts/functions)** contain your business logic and respond to events automatically. They orchestrate multi-step workflows while handling [retries](https://www.inngest.com/docs/features/inngest-functions/retries) and state management using [durable execution](https://temporal.io/blog/what-is-durable-execution) patterns.
+
+3. **[Steps](/concepts/steps)** break functions into [checkpoints](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#how-steps-work) that never re-execute if successful. This prevents duplicate work and ensures reliability when failures occur, implementing [state machine](https://en.wikipedia.org/wiki/Finite-state_machine) concepts.
+
+4. **[Flow Control](/concepts/flow-control)** manages how your functions execute at scale through [concurrency limits](https://www.inngest.com/docs/features/inngest-functions/flow-control), [rate limiting](https://en.wikipedia.org/wiki/Rate_limiting), and [batching](https://www.inngest.com/docs/features/inngest-functions/flow-control#batching-events) to protect downstream systems. <br/> <br/>
+
+<img src="/core.png" alt="Core Concepts" />
+
+| Concept | Description | Purpose |
+|---------|-------------|---------|
+| **[Events](/concepts/events)** | The triggers that start everything | Decouple your app from background jobs |
+| **[Functions](/concepts/functions)** | Where your business logic lives | Orchestrate workflows and respond to events |
+| **[Steps](/concepts/steps)** | Checkpoints that make functions durable | Avoid re-work when failures happen |
+| **[Flow Control](/concepts/flow-control)** | Controls how functions execute at scale | Protect your infrastructure and APIs |
+
+## How They Work Together
+Here's a complete example showing all concepts in action:
+
+```typescript
+// 1. EVENT: User places an order
+await inngest.send({
+  name: "order/created",
+  data: { orderId: "123", userId: "456", total: 99.99 }
+});
+
+// 2. FUNCTION: Process the order
+export const processOrder = inngest.createFunction(
+  {
+    id: "process-order",
+    // 4. FLOW CONTROL: Limit concurrent executions
+    concurrency: { limit: 5 }
+  },
+  { event: "order/created" },
+  async ({ event, step }) => {
+    // 3. STEPS: Durable workflow with checkpoints
+    const payment = await step.run("process-payment", () =>
+      stripe.charges.create({ amount: event.data.total })
+    );
+
+    const shipment = await step.run("create-shipment", () =>
+      shipping.create({ orderId: event.data.orderId })
+    );
+
+    await step.run("send-confirmation", () =>
+      email.sendConfirmation(event.data.userId, { payment, shipment })
+    );
+  }
+);
+```
+
+In this example:
+- **[Event](/concepts/events)** triggers the workflow when an order is created
+- **[Function](/concepts/functions)** orchestrates the entire order process
+- **[Steps](/concepts/steps)** ensure each operation is durable and can be retried independently  
+- **[Flow Control](/concepts/flow-control)** prevents overwhelming payment and shipping APIs
+
+## Example Workflows
+
+### E-commerce Order Processing
+1. **[Events](/concepts/events)**: `order/created`, `payment/completed`, `shipment/delivered`
+2. **[Functions](/concepts/functions)**: Order processing, inventory updates, customer notifications
+3. **[Steps](/concepts/steps)**: Payment → inventory → shipping → notifications
+4. **[Flow Control](/concepts/flow-control)**: [Rate limiting](https://www.inngest.com/docs/features/inngest-functions/flow-control#rate-limiting) for payment APIs, [concurrency](https://www.inngest.com/docs/features/inngest-functions/flow-control#concurrency) for inventory
+
+*See full implementation: [E-commerce Order Processing Example](/quick-start/examples#e-commerce-order-processing)*
+
+### SaaS User Onboarding
+1. **[Events](/concepts/events)**: `user/signup`, `subscription/created`, `usage/tracked`
+2. **[Functions](/concepts/functions)**: User onboarding, billing, feature usage analysis
+3. **[Steps](/concepts/steps)**: Multi-day onboarding sequences, retry failed charges
+4. **[Flow Control](/concepts/flow-control)**: Per-tenant limits, [batch processing](https://www.inngest.com/docs/features/inngest-functions/flow-control#batching-events) analytics
+
+*See full implementation: [User Onboarding Sequence Example](/quick-start/examples#user-onboarding-sequence)*
+
+### Content Moderation Pipeline
+1. **[Events](/concepts/events)**: `content/uploaded`, `moderation/required`, `user/reported`
+2. **[Functions](/concepts/functions)**: Content processing, moderation workflows, notifications
+3. **[Steps](/concepts/steps)**: AI analysis → human review → publish/reject
+4. **[Flow Control](/concepts/flow-control)**: Concurrency for AI APIs, batch processing uploads
+
+*See full implementation: [Content Moderation Pipeline Example](/quick-start/examples#content-moderation-pipeline)*
+
+## Real-World Learning
+
+**Complete Examples:**
+- **[User Onboarding Sequence](/quick-start/examples#user-onboarding-sequence)** - Email campaigns with behavioral triggers
+- **[E-commerce Order Processing](/quick-start/examples#e-commerce-order-processing)** - Payment, inventory, and shipping coordination
+- **[Subscription Billing Workflow](/quick-start/examples#subscription-billing-workflow)** - Recurring billing with dunning management
+- **[Content Moderation Pipeline](/quick-start/examples#content-moderation-pipeline)** - AI + human moderation workflows
+- **[Data Processing Pipeline](/quick-start/examples#data-processing-pipeline)** - Batch processing with parallel execution
+
+**Best Practices:**
+- **[Function Design Patterns](/quick-start/patterns#function-patterns)** - Composable, testable function architecture
+- **[Error Handling Strategies](/quick-start/patterns#error-handling)** - Graceful failure management
+- **[Testing Workflows](/quick-start/patterns#testing-functions)** - Unit and integration testing approaches
+
+## Reference
+
+For deeper technical details, refer to the official Inngest documentation:
+
+- **[Inngest Functions Guide](https://www.inngest.com/docs/features/inngest-functions)** - Complete function reference and configuration
+- **[Events & Triggers](https://www.inngest.com/docs/features/events-triggers)** - Event system details and trigger patterns
+- **[Steps & Workflows](https://www.inngest.com/docs/features/inngest-functions/steps-workflows)** - Step execution model and durability
+- **[Flow Control](https://www.inngest.com/docs/features/inngest-functions/flow-control)** - Production scaling features and limits
+- **[TypeScript SDK Reference](https://www.inngest.com/docs/reference/typescript)** - Complete API documentation
+- **[Local Development](https://www.inngest.com/docs/local-development)** - Dev server and testing setup
+- **[Deployment Guide](https://www.inngest.com/docs/deploy)** - Platform-specific deployment instructions
+
+## Next Steps
+
+**Recommended Learning Path:**
+1. Start with **[Events](/concepts/events)** to understand the foundation of event-driven workflows
+2. Learn **[Functions](/concepts/functions)** to see how business logic is organized and executed
+3. Master **[Steps](/concepts/steps)** for building reliable, resumable workflows
+4. Scale with **[Flow Control](/concepts/flow-control)** for production-ready performance
+
+**Then explore:**
+- **[Real-World Examples](/quick-start/examples)** to see complete implementations in action
+- **[Quick Start Guide](/quick-start)** for hands-on development tutorials
+- **[Official Getting Started](https://www.inngest.com/docs/getting-started)** for framework-specific setup 
