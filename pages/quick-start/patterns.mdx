@@ -1,561 +1,132 @@
 # Patterns & Anti-Patterns
 
-Learn proven patterns for building reliable Inngest functions and avoid common pitfalls that can lead to brittle, hard-to-debug workflows. These patterns are based on [durable execution](https://temporal.io/blog/what-is-durable-execution) principles and production experience with [event-driven architectures](https://en.wikipedia.org/wiki/Event-driven_architecture).
+Learn proven patterns for building reliable Inngest functions and avoid common pitfalls that can lead to brittle, hard-to-debug workflows. These patterns are based on [durable execution](https://www.inngest.com/blog/principles-of-durable-execution) principles and production experience with [event-driven architectures](https://en.wikipedia.org/wiki/Event-driven_architecture).
 
 ## Function Design Patterns
 
 ### Use Descriptive Step Names
 
-[Step names](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#naming-steps) appear in logs, debugging interfaces, and error messages. Make them meaningful for better [observability](https://www.inngest.com/docs/platform/monitor) and debugging.
+[Step names](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#naming-steps) appear in logs, debugging interfaces ([Inngest Dev Server](https://www.inngest.com/docs/dev-server)), and error messages. Make them meaningful for better [observability](https://www.inngest.com/docs/platform/monitor).
 
 ```typescript
 // ✅ Good - Clear, descriptive names
 await step.run("validate-order-items", () => validateOrderItems(items));
 await step.run("calculate-shipping-cost", () => calculateShipping(address));
-await step.run("charge-payment-method", () => chargeCard(paymentMethodId));
-await step.run("send-order-confirmation", () => sendConfirmationEmail(order));
 
 // ❌ Bad - Generic, uninformative names  
 await step.run("step1", () => validateOrderItems(items));
-await step.run("step2", () => calculateShipping(address));
-await step.run("process", () => chargeCard(paymentMethodId));
-await step.run("finish", () => sendConfirmationEmail(order));
 ```
 
-### Keep Steps Atomic and Idempotent
-
-Each [step](https://www.inngest.com/docs/features/inngest-functions/steps-workflows) should do one thing well and be safe to run multiple times. This follows [idempotence](https://en.wikipedia.org/wiki/Idempotence) principles crucial for reliable [distributed systems](https://en.wikipedia.org/wiki/Distributed_computing).
+### Keep Steps Atomic
+Each [`step.run()`](/concepts/steps#steprun---execute--retry) should perform one logical unit of work that can be safely retried. This improves error isolation and makes workflows easier to debug. See more in [Steps Best Practices](/concepts/steps#step-best-practices).
 
 ```typescript
-// ✅ Good - Atomic, idempotent operations
-export const processUser = inngest.createFunction(
-  { id: "process-user" },
-  { event: "user/signup" },
-  async ({ event, step }) => {
-    // Step 1: Create user record (idempotent with upsert)
-    const user = await step.run("create-user", async () => {
-      return await db.users.upsert({
-        where: { email: event.data.email },
-        create: { email: event.data.email, name: event.data.name },
-        update: { name: event.data.name }
-      });
-    });
+// ✅ Good - Atomic operations
+await step.run("create-user-record", () => db.users.create(userData));
+await step.run("send-welcome-email", () => emailService.sendWelcome(user.email));
 
-    // Step 2: Send welcome email (idempotent with deduplication)
-    await step.run("send-welcome-email", async () => {
-      return await emailService.send({
-        to: user.email,
-        template: "welcome",
-        deduplicationId: `welcome-${user.id}`
-      });
-    });
+// ❌ Bad - Multiple operations in one step
+await step.run("create-user-and-send-email", async () => {
+  const user = await db.users.create(userData);
+  await emailService.sendWelcome(user.email);
+});
+```
 
-    // Step 3: Create billing customer (idempotent API)
-    await step.run("create-billing-customer", async () => {
-      return await stripe.customers.create({
-        email: user.email,
-        metadata: { userId: user.id }
-      }, {
-        idempotencyKey: `billing-${user.id}`
-      });
-    });
-  }
+### Idempotent Step Design
+Ensure your step logic can be safely executed multiple times without unintended side effects, especially when interacting with external systems. Use techniques like idempotency keys if the external API supports them. [Learn about Idempotency](https://en.wikipedia.org/wiki/Idempotence#Computer_science).
+
+```typescript
+// ✅ Good - Using idempotency key for Stripe
+await step.run("charge-customer-card", () => 
+  stripe.charges.create({
+    amount: order.total,
+    currency: "usd",
+    customer: order.customerId
+  }, { 
+    idempotencyKey: `charge-${order.id}` // Stripe handles retries safely
+  })
 );
 ```
 
-*Learn more: [User Onboarding Sequence Example](/quick-start/examples#user-onboarding-sequence)*
+### Explicit Data Passing Between Steps
+Pass necessary data as arguments to subsequent steps or retrieve it within a step. Avoid relying on mutable variables scoped outside your step functions, as their state is not preserved across retries or distributed executions. See [Passing Data in Steps](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#passing-data-between-steps).
 
-### Handle Errors Gracefully
+### Function Composition
+Break complex workflows into smaller, reusable [Inngest functions](/concepts/functions) and orchestrate them using [`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows) or [`step.sendEvent()`](/concepts/steps#step-tools) for event-driven chaining.
 
-Distinguish between [retryable and non-retryable errors](https://www.inngest.com/docs/features/inngest-functions/retries) to avoid infinite retry loops and improve system reliability.
+*See: [Function Composition in Functions](/concepts/functions#function-composition) and [Invoking Functions Guide](https://www.inngest.com/docs/guides/invoking-functions-directly).*
+
+## Event Handling Patterns
+
+### Use Specific Event Names
+Use clear, hierarchical event names (e.g., `user/signed_up`, `order/payment_succeeded`). This helps with [event matching](/concepts/events#event-matching-and-filtering) and makes your system easier to understand and debug. [See Event Naming Tips](https://www.inngest.com/docs/features/events-triggers/event-format#tips-for-event-naming).
+
+### Event Fan-Out
+One event triggers multiple independent functions. This is a common pattern for decoupling processes. For example, a `user/signed_up` event might trigger `SendWelcomeEmail`, `UpdateAnalytics`, and `StartOnboardingWorkflow` functions.
+
+*See: [Event Fan-Out in Events](/concepts/events#fan-out) and [Fan-out Guide](https://www.inngest.com/docs/guides/fan-out-jobs).*
+
+### Event Versioning (Conceptual)
+While Inngest functions have [versioning](https://www.inngest.com/docs/features/inngest-functions/versioning), consider how you'll handle changes to event schemas over time. Strategies include tolerant readers, version numbers in event names (`user/signed_up/v2`), or transformation functions.
+
+## Error Handling in Steps
+
+Effective error handling is crucial for robust workflows.
+
+### Leverage Automatic Retries
+Inngest automatically retries failed steps with [exponential backoff](https://en.wikipedia.org/wiki/Exponential_backoff). For most transient errors (network issues, temporary API outages), this is often sufficient. [See Inngest Retry Docs](https://www.inngest.com/docs/features/inngest-functions/error-retries/retries).
+
+### Custom `try/catch` for Business Logic Errors
+Wrap step operations in `try/catch` blocks to handle specific business logic errors (e.g., payment declined due to insufficient funds vs. API error). This allows you to implement custom recovery logic or send specific notifications.
 
 ```typescript
-// ✅ Good - Thoughtful error handling
-await step.run("call-external-api", async () => {
+await step.run("process-payment", async () => {
   try {
-    return await externalAPI.call(data);
+    return await paymentGateway.charge(order.amount, cardDetails);
   } catch (error) {
-    if (error.status === 429) {
-      // Rate limited - let Inngest retry with exponential backoff
-      throw error;
-    } else if (error.status === 400) {
-      // Bad request - don't retry
-      throw new NonRetriableError(`Invalid data: ${error.message}`);
-    } else if (error.status >= 500) {
-      // Server error - retry
-      throw error;
+    if (error.code === "card_declined") {
+      await step.sendEvent("notify-user-card-declined", { // Triggers another function
+        name: "user/payment_declined", 
+        data: { userId: order.userId, reason: error.message }
+      });
+      // Optionally, re-throw a NonRetriableError to stop retries for this step
+      throw new NonRetriableError("Card was declined."); // See: https://www.inngest.com/docs/reference/typescript/inngest#nonretriableerror
     }
-    // Unknown error - don't retry to be safe
-    throw new NonRetriableError(`Unexpected error: ${error.message}`);
+    throw error; // Re-throw other errors for Inngest to retry
   }
 });
 ```
 
-*Learn more: [Error Handling in Official Docs](https://www.inngest.com/docs/features/inngest-functions/retries)*
+### `onFailure` Handler
+Use the function-level [`onFailure` handler](https://www.inngest.com/docs/reference/functions/handling-failures) for cleanup, alerting, or dead-letter queueing if all retries for a function are exhausted.
 
-### Use Parallel Execution for Independent Operations
+## Flow Control Patterns
 
-Run unrelated steps concurrently to improve performance. This pattern leverages [asynchronous programming](https://en.wikipedia.org/wiki/Asynchronous_I/O) principles for better efficiency.
-
-```typescript
-// ✅ Good - Parallel execution
-export const enrichUser = inngest.createFunction(
-  { id: "enrich-user" },
-  { event: "user/created" },
-  async ({ event, step }) => {
-    // These operations are independent - run them in parallel
-    const [profile, creditScore, socialData] = await Promise.all([
-      step.run("fetch-profile", () => profileAPI.get(event.data.userId)),
-      step.run("check-credit", () => creditAPI.check(event.data.ssn)),
-      step.run("fetch-social", () => socialAPI.lookup(event.data.email))
-    ]);
-
-    // This depends on the above - run after
-    await step.run("save-enriched-data", () => 
-      db.users.update(event.data.userId, { profile, creditScore, socialData })
-    );
-  }
-);
-```
-
-*Learn more: [Data Processing Pipeline Example](/quick-start/examples#data-processing-pipeline)*
-
-### Design for Observability
-
-Include context that helps with debugging and monitoring. Good [observability](https://en.wikipedia.org/wiki/Observability_(software)) is crucial for production systems.
-
-```typescript
-// ✅ Good - Rich context and logging
-export const processPayment = inngest.createFunction(
-  { id: "process-payment" },
-  { event: "payment/requested" },
-  async ({ event, step, logger }) => {
-    const { orderId, amount, userId } = event.data;
-    
-    logger.info("Starting payment processing", { orderId, amount, userId });
-
-    const user = await step.run("fetch-user", async () => {
-      const userData = await db.users.findById(userId);
-      logger.info("User fetched", { userId, userEmail: userData.email });
-      return userData;
-    });
-
-    const payment = await step.run("charge-payment", async () => {
-      logger.info("Attempting payment charge", { amount, orderId });
-      try {
-        const result = await paymentProvider.charge({ amount, userId });
-        logger.info("Payment successful", { 
-          orderId, 
-          paymentId: result.id, 
-          amount: result.amount 
-        });
-        return result;
-      } catch (error) {
-        logger.error("Payment failed", { 
-          orderId, 
-          amount, 
-          error: error.message 
-        });
-        throw error;
-      }
-    });
-
-    return { orderId, paymentId: payment.id, status: "completed" };
-  }
-);
-```
-
-*Learn more: [Function Logging in Official Docs](https://www.inngest.com/docs/features/inngest-functions/logging)*
-
-### Use Type Safety
-
-Define clear event types for better development experience and [type safety](https://en.wikipedia.org/wiki/Type_safety). [TypeScript](https://www.inngest.com/docs/reference/typescript) integration provides compile-time safety.
-
-```typescript
-// ✅ Good - Strong typing
-type UserSignupEvent = {
-  name: "user/signup";
-  data: {
-    userId: string;
-    email: string;
-    name: string;
-    plan: "free" | "pro" | "enterprise";
-  };
-};
-
-type OrderCreatedEvent = {
-  name: "order/created";
-  data: {
-    orderId: string;
-    userId: string;
-    items: Array<{ id: string; quantity: number; price: number }>;
-    total: number;
-  };
-};
-
-export const processOrder = inngest.createFunction(
-  { id: "process-order" },
-  { event: "order/created" },
-  async ({ event, step }: { event: OrderCreatedEvent; step: any }) => {
-    // TypeScript knows event.data structure
-    const { orderId, userId, items, total } = event.data;
-    // ...
-  }
-);
-```
-
-*Learn more: [TypeScript SDK Reference](https://www.inngest.com/docs/reference/typescript)*
-
-## Anti-Patterns to Avoid
-
-### Don't Put Non-Deterministic Code Outside Steps
-
-All database calls, API calls, and random operations must be in [steps](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#how-steps-work). This is fundamental to [deterministic execution](https://en.wikipedia.org/wiki/Deterministic_algorithm) in durable systems.
-
-```typescript
-// ❌ Bad - Non-deterministic code outside steps
-export const badFunction = inngest.createFunction(
-  { id: "bad-function" },
-  { event: "some/event" },
-  async ({ event, step }) => {
-    // This will run every time the function retries!
-    const user = await db.users.findById(event.data.userId);
-    const randomId = Math.random().toString();
-    
-    await step.run("process", () => {
-      return processUser(user, randomId);
-    });
-  }
-);
-
-// ✅ Good - All non-deterministic code in steps
-export const goodFunction = inngest.createFunction(
-  { id: "good-function" },
-  { event: "some/event" },
-  async ({ event, step }) => {
-    const user = await step.run("fetch-user", async () => {
-      return await db.users.findById(event.data.userId);
-    });
-    
-    const randomId = await step.run("generate-id", async () => {
-      return Math.random().toString();
-    });
-    
-    await step.run("process", () => {
-      return processUser(user, randomId);
-    });
-  }
-);
-```
-
-### Don't Use the Same Step Name for Different Operations
-
-[Step names must be unique](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#naming-steps) within a function execution for proper memoization and replay.
-
-```typescript
-// ❌ Bad - Reusing step names
-export const badLoop = inngest.createFunction(
-  { id: "bad-loop" },
-  { event: "process/items" },
-  async ({ event, step }) => {
-    for (const item of event.data.items) {
-      // This will always return the first item's result!
-      await step.run("process-item", () => processItem(item));
-    }
-  }
-);
-
-// ✅ Good - Unique step names
-export const goodLoop = inngest.createFunction(
-  { id: "good-loop" },
-  { event: "process/items" },
-  async ({ event, step }) => {
-    for (let i = 0; i < event.data.items.length; i++) {
-      await step.run(`process-item-${i}`, () => processItem(event.data.items[i]));
-    }
-  }
-);
-```
-
-### Don't Ignore Rate Limits and Concurrency
-
-Protect external services and your infrastructure with proper [flow control](https://www.inngest.com/docs/features/inngest-functions/flow-control).
-
-```typescript
-// ❌ Bad - No rate limiting
-export const badAPICall = inngest.createFunction(
-  { id: "bad-api-call" },
-  { event: "sync/user" },
-  async ({ event, step }) => {
-    // Could overwhelm external API with thousands of concurrent calls
-    await step.run("sync", () => externalAPI.sync(event.data.userId));
-  }
-);
-
-// ✅ Good - Appropriate limits
-export const goodAPICall = inngest.createFunction(
-  {
-    id: "good-api-call",
-    concurrency: { limit: 10 },           // Max 10 concurrent
-    rateLimit: { limit: 1000, period: "1h" }  // Respect API limits
-  },
-  { event: "sync/user" },
-  async ({ event, step }) => {
-    await step.run("sync", () => externalAPI.sync(event.data.userId));
-  }
-);
-```
-
-*Learn more: [Flow Control Concepts](/concepts/flow-control)*
-
-### Don't Create Overly Complex Single Functions
-
-Break complex workflows into smaller, composable functions using [function composition](https://www.inngest.com/docs/features/inngest-functions/function-composition) patterns.
-
-```typescript
-// ❌ Bad - Monolithic function
-export const monolithicOrder = inngest.createFunction(
-  { id: "monolithic-order" },
-  { event: "order/created" },
-  async ({ event, step }) => {
-    // 50+ steps doing everything from validation to shipping
-    // Difficult to test, debug, and maintain
-    await step.run("validate", () => /* ... */);
-    await step.run("check-inventory", () => /* ... */);
-    await step.run("calculate-tax", () => /* ... */);
-    await step.run("process-payment", () => /* ... */);
-    await step.run("reserve-items", () => /* ... */);
-    await step.run("generate-invoice", () => /* ... */);
-    await step.run("create-shipment", () => /* ... */);
-    await step.run("send-confirmation", () => /* ... */);
-    // ... many more steps
-  }
-);
-
-// ✅ Good - Composed functions
-export const processOrder = inngest.createFunction(
-  { id: "process-order" },
-  { event: "order/created" },
-  async ({ event, step }) => {
-    // Orchestrate smaller, focused functions
-    const payment = await step.invoke("process-payment", {
-      function: processPaymentFunction,
-      data: { orderId: event.data.orderId }
-    });
-
-    const fulfillment = await step.invoke("fulfill-order", {
-      function: fulfillOrderFunction,
-      data: { orderId: event.data.orderId }
-    });
-
-    await step.invoke("send-confirmation", {
-      function: sendConfirmationFunction,
-      data: { orderId: event.data.orderId, paymentId: payment.id }
-    });
-  }
-);
-```
-
-*Learn more: [E-commerce Order Processing Example](/quick-start/examples#e-commerce-order-processing)*
-
-### Don't Ignore Failed Steps
-
-Handle step failures appropriately in your business logic rather than relying solely on [automatic retries](https://www.inngest.com/docs/features/inngest-functions/retries).
-
-```typescript
-// ❌ Bad - Ignoring potential failures
-export const badErrorHandling = inngest.createFunction(
-  { id: "bad-error-handling" },
-  { event: "user/action" },
-  async ({ event, step }) => {
-    // If this fails, the function will retry forever
-    await step.run("critical-operation", () => criticalAPI.call(event.data));
-    
-    // This might never run if the above keeps failing
-    await step.run("cleanup", () => cleanup(event.data));
-  }
-);
-
-// ✅ Good - Handle failures gracefully
-export const goodErrorHandling = inngest.createFunction(
-  { id: "good-error-handling" },
-  { event: "user/action" },
-  async ({ event, step }) => {
-    try {
-      await step.run("critical-operation", () => criticalAPI.call(event.data));
-    } catch (error) {
-      // Handle the failure case
-      await step.run("handle-failure", () => 
-        notifyAdmins(`Critical operation failed: ${error.message}`)
-      );
-      return { success: false, error: error.message };
-    }
-    
-    await step.run("cleanup", () => cleanup(event.data));
-    return { success: true };
-  }
-);
-```
+Refer to the **[Flow Control concept page](/concepts/flow-control)** for detailed patterns on:
+- [Concurrency Control](/concepts/flow-control#concurrency-control)
+- [Rate Limiting](/concepts/flow-control#rate-limiting)
+- [Event Batching](/concepts/flow-control#event-batching)
+- [Debouncing](/concepts/flow-control#debouncing)
 
 ## Testing Functions
 
-### Unit Testing Individual Steps
-
-Test your business logic in isolation from Inngest infrastructure.
-
-```typescript
-// ✅ Good - Test business logic separately
-describe('Order Processing Logic', () => {
-  it('should calculate correct shipping cost', () => {
-    const result = calculateShipping({
-      items: [{ weight: 2, dimensions: { l: 10, w: 5, h: 3 } }],
-      destination: { country: 'US', state: 'CA', zip: '94105' }
-    });
-    
-    expect(result.cost).toBe(12.50);
-    expect(result.estimatedDays).toBe(3);
-  });
-
-  it('should validate order items correctly', () => {
-    const items = [
-      { id: 'item1', quantity: 2, price: 19.99 },
-      { id: 'item2', quantity: 1, price: 39.99 }
-    ];
-    
-    const validation = validateOrderItems(items);
-    expect(validation.valid).toBe(true);
-    expect(validation.total).toBe(79.97);
-  });
-});
-```
+### Unit Testing with Mocks
+Use `inngest/test` utilities like [`createStepTools()`](https://www.inngest.com/docs/reference/testing#createsteptools) to mock step behaviors and test your function's logic in isolation. [See official Testing Guide](https://www.inngest.com/docs/reference/testing).
 
 ### Integration Testing with Test Engine
+Use [`InngestTestEngine`](https://www.inngest.com/docs/reference/testing#inngesttestengine) from `inngest/test` to run your functions against a local test engine, verifying event triggers, step execution, and overall workflow behavior.
 
-Use [Inngest's test engine](https://www.inngest.com/docs/sdk/test-engine) for full workflow testing.
+*See more: [Testing Functions in Functions Concept](/concepts/functions#testing-functions).*
 
-```typescript
-// ✅ Good - Integration testing
-import { InngestTestEngine } from "inngest/test";
+## Anti-Patterns to Avoid
 
-describe('Order Processing Workflow', () => {
-  let testEngine: InngestTestEngine;
-
-  beforeEach(() => {
-    testEngine = new InngestTestEngine({
-      functions: [processOrder, sendConfirmation]
-    });
-  });
-
-  it('should process order successfully', async () => {
-    await testEngine.send({
-      name: "order/created",
-      data: { orderId: "test-123", userId: "user-456", total: 99.99 }
-    });
-
-    const runs = await testEngine.waitForRuns("process-order");
-    expect(runs).toHaveLength(1);
-    expect(runs[0].status).toBe("completed");
-  });
-});
-```
-
-*Learn more: [Testing Strategies in Official Docs](https://www.inngest.com/docs/features/inngest-functions/testing)*
-
-import { Callout } from 'nextra/components'
-
-<Callout type="info">
-**Best Practice**: Start with simple patterns and gradually introduce complexity as your application grows. Most workflows can be built with basic `step.run()` operations and proper [error handling](https://www.inngest.com/docs/features/inngest-functions/retries).
-</Callout>
-
-<Callout type="warning">
-**Performance Note**: Every step creates a network round-trip for durability. While Inngest is optimized for this, don't create unnecessarily granular steps for simple operations. Balance [atomicity](https://en.wikipedia.org/wiki/Atomicity_(database_systems)) with performance.
-</Callout>
-
-## Production Considerations
-
-### Environment-Specific Configuration
-
-Use different settings for development and production environments.
-
-```typescript
-// ✅ Good - Environment-aware configuration
-const isProduction = process.env.NODE_ENV === 'production';
-
-export const processOrder = inngest.createFunction(
-  {
-    id: "process-order",
-    concurrency: { limit: isProduction ? 50 : 5 },
-    rateLimit: { 
-      limit: isProduction ? 1000 : 100, 
-      period: "1h" 
-    }
-  },
-  { event: "order/created" },
-  async ({ event, step }) => {
-    // Your workflow logic
-  }
-);
-```
-
-### Monitoring and Alerting
-
-Set up proper monitoring for your functions using [Inngest's observability features](https://www.inngest.com/docs/platform/monitor).
-
-```typescript
-// ✅ Good - Rich monitoring context
-export const criticalWorkflow = inngest.createFunction(
-  { id: "critical-workflow" },
-  { event: "critical/event" },
-  async ({ event, step, logger }) => {
-    const startTime = Date.now();
-    
-    try {
-      const result = await step.run("critical-operation", () => 
-        performCriticalOperation(event.data)
-      );
-      
-      logger.info("Critical operation completed", {
-        duration: Date.now() - startTime,
-        eventId: event.id,
-        result: result.id
-      });
-      
-      return result;
-    } catch (error) {
-      logger.error("Critical operation failed", {
-        duration: Date.now() - startTime,
-        eventId: event.id,
-        error: error.message
-      });
-      
-      // Send alert for critical failures
-      await step.run("send-alert", () =>
-        alertingService.send({
-          level: "critical",
-          message: `Critical workflow failed: ${error.message}`,
-          context: { eventId: event.id }
-        })
-      );
-      
-      throw error;
-    }
-  }
-);
-```
+- **Non-Deterministic Logic in Steps**: Ensure that given the same input, a step's logic (especially conditional paths) behaves identically. Inngest relies on determinism for reliable retries. [Read about Determinism](https://en.wikipedia.org/wiki/Deterministic_algorithm).
+- **Overly Large Event Payloads**: Keep event payloads concise. Fetch large data within steps if needed. [See Event Payload Best Practices](/concepts/events#event-payload-best-practices).
+- **Ignoring Flow Control**: Not setting up [concurrency](/concepts/flow-control#concurrency-control) or [rate limits](/concepts/flow-control#rate-limiting) can overwhelm downstream services.
+- **Shared Mutable State Across Steps**: Each step should be self-contained or explicitly pass data. State outside of step inputs/outputs is not reliably preserved across retries or distributed executions. [See Passing Data in Steps](/concepts/steps#step-best-practices).
 
 ## Next Steps
 
-**Apply these patterns:**
-- Explore [Real-World Examples](/quick-start/examples) to see these patterns in complete implementations
-- Study [E-commerce Order Processing](/quick-start/examples#e-commerce-order-processing) for complex workflow patterns
-- Review [Content Moderation Pipeline](/quick-start/examples#content-moderation-pipeline) for conditional logic patterns
-
-**Deepen your knowledge:**
-- Read [Function Composition Guide](https://www.inngest.com/docs/features/inngest-functions/function-composition) for advanced orchestration
-- Learn [Testing Strategies](https://www.inngest.com/docs/features/inngest-functions/testing) for reliable function testing
-- Explore [Deployment Best Practices](https://www.inngest.com/docs/deploy) for production readiness
-
-**Get help:**
-- Join the [Discord Community](https://www.inngest.com/discord) for pattern discussions
-- Check [Official Documentation](https://www.inngest.com/docs) for detailed guides
-- Browse [Community Examples](https://github.com/inngest/inngest-js/tree/main/examples) for more patterns 
+- Explore **[Real-World Examples](/quick-start/examples)** to see these patterns in action.
+- Deepen your understanding of **[Core Concepts](/concepts)**.
+- Consult the **[Official Inngest Guides](https://www.inngest.com/docs/guides)** for specific features. 

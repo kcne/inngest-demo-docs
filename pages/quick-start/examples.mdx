@@ -1,43 +1,38 @@
 # Real-World Examples
 
-Learn from complete implementations of common Inngest use cases. Each example demonstrates production-ready patterns with full function code, event schemas, error handling, and best practices. These examples showcase how to build robust, scalable workflows that handle real business requirements.
+Learn from complete implementations of common Inngest use cases. Each example demonstrates [production-ready patterns](/quick-start/patterns) with full function code, [event schemas](/concepts/events#event-structure), [error handling strategies](/quick-start/patterns#error-handling-in-steps), and [best practices](/quick-start/patterns). These examples showcase how to build robust, scalable workflows that handle real business requirements using Inngest's [core concepts](/concepts).
 
 ## User Onboarding Sequence
 
-**What it does**: Creates an intelligent email onboarding flow that adapts based on user behavior, handles activation timeouts, and personalizes content based on engagement levels.
+**What it does**: Creates an intelligent email onboarding flow that adapts based on user behavior (e.g., using [`step.waitForEvent()`](/concepts/steps#stepwaitforevent---wait-for-external-input)), handles activation timeouts (using [`step.sleep()`](/concepts/steps#stepsleep---scheduled-delays)), and personalizes content based on engagement levels.
 
 **When to use**: Customer onboarding, user activation campaigns, trial-to-paid conversion flows, or any multi-step user journey that needs to react to user behavior over time.
 
-### Key Features
+### Key Features & Benefits
 
-| Feature | Description | Business Value |
-|---------|-------------|----------------|
-| **Behavioral Adaptation** | Waits for user activation and adjusts messaging accordingly | Higher activation rates through personalized timing |
-| **Timeout Handling** | Automatically handles users who don't activate within timeframes | Prevents lost users with strategic re-engagement |
-| **Engagement Scoring** | Measures user activity and tailors advanced content | Improves feature adoption and user retention |
-| **Concurrency Control** | Prevents duplicate workflows per user | Ensures consistent user experience |
-| **Flexible Timing** | Uses `waitForEvent` with timeouts for responsive flows | Balances immediate response with patience |
+| Technical Capability | Business Value |
+|----------------------|----------------|
+| Durable Timers (`step.sleep`) | Reliable multi-day/week email sequences, accurate trial expirations. [Docs](https://www.inngest.com/docs/reference/functions/step-sleep) |
+| Event-Driven Logic (`step.waitForEvent`) | Adapt workflow to user actions (email open, feature used). [Docs](https://www.inngest.com/docs/reference/functions/step-wait-for-event) |
+| [Idempotent Steps](/quick-start/patterns#idempotent-step-design) | Prevents duplicate emails or actions if workflow retries. |
+| [Concurrency Control](/concepts/flow-control#concurrency-keys-multi-tenant-concurrency) (per user) | Ensures each user's onboarding is independent and doesn't affect others. |
 
-### Workflow Steps
+### Core Workflow Logic
 
-1. **Immediate Welcome** - Send welcome email with plan-specific content
-2. **Activation Wait** - Wait 24 hours for user to activate their account
-3. **Activation Check** - Verify if user activated, send reminders if not
-4. **Activation Response** - Wait for activation event with 3-day timeout
-5. **Onboarding Continuation** - Send getting started guide after 2-day delay
-6. **Engagement Analysis** - Measure user activity over 7 days
-7. **Personalized Follow-up** - Send tips for low engagement or advanced features for high engagement
+1.  Trigger on `user/signup` [event](/concepts/events).
+2.  Send welcome email using [`step.run()`](/concepts/steps#steprun---execute--retry).
+3.  [`step.sleep()`](/concepts/steps#stepsleep---scheduled-delays) for 2 days.
+4.  Send follow-up email with tips.
+5.  [`step.waitForEvent()`](/concepts/steps#stepwaitforevent---wait-for-external-input) for `user/activated_feature_X` (timeout 5 days).
+6.  If event received, send congratulatory email.
+7.  If timeout, send re-engagement email.
 
-### Use Cases
-- **SaaS Trial Onboarding**: Guide trial users to key features and conversion
-- **E-learning Platforms**: Adapt course recommendations based on progress
-- **Marketplace Onboarding**: Help new sellers complete profile setup and first listing
-- **Mobile App Onboarding**: React to user permissions and feature usage
+### Event Types
 
 ```typescript
-// Event types
+// Event sent when a new user signs up
 type UserSignupEvent = {
-  name: "user/signup";
+  name: "user/signup"; // See: Event Naming Best Practices (/quick-start/patterns#use-specific-event-names)
   data: {
     userId: string;
     email: string;
@@ -46,908 +41,477 @@ type UserSignupEvent = {
   };
 };
 
-type UserActivatedEvent = {
-  name: "user/activated";
+// Event sent when user performs a key activation step
+type UserActivatedFeatureEvent = {
+  name: "user/activated_feature_X";
   data: {
     userId: string;
+    featureName: string;
     activatedAt: string;
   };
 };
+```
 
-// Main onboarding function
-export const userOnboarding = inngest.createFunction(
-  { 
-    id: "user-onboarding",
-    concurrency: { limit: 100, key: "event.data.userId" }
+### Function Implementation
+
+```typescript
+import { inngest } from "../../inngest/client"; // Your Inngest client
+import { NonRetriableError } from "inngest"; // See: https://www.inngest.com/docs/reference/typescript/inngest#nonretriableerror
+
+// Define event types (as above)
+
+export const userOnboardingSequence = inngest.createFunction(
+  {
+    id: "user-onboarding-sequence",
+    name: "User Onboarding Email Sequence",
+    // Concurrency per user to ensure individual, isolated onboarding flows
+    concurrency: { 
+      key: "event.data.userId", 
+      limit: 1 
+    }, // See: /concepts/flow-control#concurrency-keys-multi-tenant-concurrency
+    // Configure retries for transient errors
+    retries: 3 // See: https://www.inngest.com/docs/features/inngest-functions/error-retries/retries
   },
-  { event: "user/signup" },
-  async ({ event, step }) => {
+  { event: "user/signup" }, // Trigger for the function
+  async ({ event, step, logger }) => {
     const { userId, email, name, plan } = event.data;
+    logger.info("Starting onboarding sequence", { userId, plan });
 
-    // Send immediate welcome email
+    // Step 1: Send Welcome Email
     await step.run("send-welcome-email", async () => {
-      return await emailService.send({
-        to: email,
-        template: "welcome",
-        data: { name, plan }
-      });
+      return emailService.sendWelcome({ email, name, plan });
     });
+    logger.info("Welcome email sent", { userId });
 
-    // Wait 1 day for user to activate
-    await step.sleep("wait-for-activation", "1d");
-
-    // Check if user activated their account
-    const user = await step.run("check-activation", async () => {
-      return await database.users.findById(userId);
-    });
-
-    if (!user.isActivated) {
-      // Send activation reminder
-      await step.run("send-activation-reminder", async () => {
-        return await emailService.send({
-          to: email,
-          template: "activation-reminder",
-          data: { name, activationLink: user.activationLink }
-        });
-      });
-
-      // Wait for activation event or timeout after 3 days
-      const activationEvent = await step.waitForEvent("wait-for-activation-event", {
-        event: "user/activated",
-        timeout: "3d",
-        if: `event.data.userId == "${userId}"`
-      });
-
-      if (!activationEvent) {
-        // User never activated - send final reminder
-        await step.run("send-final-reminder", async () => {
-          return await emailService.send({
-            to: email,
-            template: "final-activation-reminder",
-            data: { name }
-          });
-        });
-        return { status: "not_activated" };
-      }
-    }
-
-    // User is activated - continue onboarding
+    // Step 2: Wait for 2 days
     await step.sleep("wait-2-days", "2d");
 
-    // Send getting started guide
-    await step.run("send-getting-started", async () => {
-      return await emailService.send({
-        to: email,
-        template: "getting-started",
-        data: { name, plan }
-      });
+    // Step 3: Send Follow-up Email with Tips
+    await step.run("send-follow-up-tips", async () => {
+      return emailService.sendUsageTips({ email, name, plan });
+    });
+    logger.info("Follow-up tips email sent", { userId });
+
+    // Step 4: Wait for user to activate a key feature (e.g., created first project)
+    // Timeout after 5 days if no activation event is received.
+    const activationEvent = await step.waitForEvent("wait-for-feature-activation", {
+      event: "user/activated_feature_X",
+      timeout: "5d",
+      // Ensure we only match events for this specific user
+      if: `event.data.userId == "${userId}"`, // See: https://www.inngest.com/docs/reference/functions/step-wait-for-event#if-expression
     });
 
-    // Wait 1 week
-    await step.sleep("wait-1-week", "7d");
-
-    // Check user engagement
-    const engagement = await step.run("check-engagement", async () => {
-      return await analytics.getUserEngagement(userId, "7d");
-    });
-
-    if (engagement.score < 0.3) {
-      // Low engagement - send tips email
-      await step.run("send-engagement-tips", async () => {
-        return await emailService.send({
-          to: email,
-          template: "engagement-tips",
-          data: { name, unusedFeatures: engagement.unusedFeatures }
+    if (activationEvent) {
+      // Step 5a: User activated the feature
+      logger.info("User activated feature", { userId, feature: activationEvent.data.featureName });
+      await step.run("send-activation-congrats-email", async () => {
+        return emailService.sendFeatureActivationCongrats({
+          email,
+          name,
+          featureName: activationEvent.data.featureName,
         });
       });
     } else {
-      // High engagement - send advanced features
-      await step.run("send-advanced-features", async () => {
-        return await emailService.send({
-          to: email,
-          template: "advanced-features",
-          data: { name, plan }
-        });
+      // Step 5b: Timeout - User did not activate the feature in 5 days
+      logger.info("User did not activate feature within 5 days", { userId });
+      await step.run("send-re-engagement-email", async () => {
+        return emailService.sendReEngagement({ email, name, plan });
       });
     }
 
-    return { 
-      status: "completed",
-      engagementScore: engagement.score 
-    };
+    logger.info("Onboarding sequence completed for user", { userId });
+    return { status: "completed", userId };
   }
 );
+
+// Placeholder email service
+const emailService = {
+  sendWelcome: async (data: any) => { console.log("Sending welcome email", data); return { success: true }; },
+  sendUsageTips: async (data: any) => { console.log("Sending usage tips", data); return { success: true }; },
+  sendFeatureActivationCongrats: async (data: any) => { console.log("Sending feature activation congrats", data); return { success: true }; },
+  sendReEngagement: async (data: any) => { console.log("Sending re-engagement email", data); return { success: true }; },
+};
 ```
+
+**Why Inngest Excels Here:**
+Inngest's `step.sleep()` and `step.waitForEvent()` make it trivial to build long-running, stateful workflows that react to user behavior over days or weeks, without managing complex state machines or databases for timers. [Automatic retries](/quick-start/patterns#leverage-automatic-retries) handle transient email sending failures.
+
+**Learn More:**
+- [Official Guide: Building an Email Drip Campaign](https://www.inngest.com/docs/guides/email-drip-campaign)
+- [Concept: Steps - Scheduled Delays](/concepts/steps#stepsleep---scheduled-delays)
+- [Concept: Steps - Wait for External Input](/concepts/steps#stepwaitforevent---wait-for-external-input)
+
+---
 
 ## E-commerce Order Processing
 
-**What it does**: Orchestrates complete order fulfillment from payment processing through shipping, with comprehensive error handling and customer communication.
+**What it does**: Manages the entire order fulfillment lifecycle from payment processing and inventory updates to shipping notifications and review requests. It demonstrates error handling for payment failures and composing multiple Inngest functions.
 
-**When to use**: E-commerce platforms, marketplace transactions, subscription services, or any business that needs to coordinate payment, inventory, and fulfillment processes.
+**When to use**: Any e-commerce backend, order management systems, or any multi-step process involving financial transactions, inventory management, and third-party API integrations.
 
-### Key Features
+### Key Features & Benefits
 
-| Feature | Description | Business Value |
-|---------|-------------|----------------|
-| **Atomic Operations** | Each step is isolated and retryable | Prevents partial order states and data corruption |
-| **Inventory Management** | Checks availability and reserves items | Prevents overselling and inventory conflicts |
-| **Payment Processing** | Secure payment with comprehensive error handling | Reduces payment failures and chargebacks |
-| **Multi-Service Coordination** | Integrates payment, inventory, shipping, and notifications | Creates seamless customer experience |
-| **Automatic Recovery** | Handles failures at any step with appropriate cleanup | Minimizes manual intervention and support tickets |
+| Technical Capability | Business Value |
+|----------------------|----------------|
+| [Idempotent Steps](/quick-start/patterns#idempotent-step-design) (`step.run`) | Prevents double charging or duplicate inventory decrements. |
+| Error Handling (`try/catch`, `NonRetriableError`) | Gracefully handles payment declines vs. system errors. See [patterns](/quick-start/patterns#custom-trycatch-for-business-logic-errors). |
+| Function Composition ([`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows)) | Modular workflow by calling separate functions for payment, fulfillment. |
+| [Reliable Retries](/quick-start/patterns#leverage-automatic-retries) | Handles temporary API outages with payment gateways or shipping providers. |
 
-### Workflow Steps
+### Core Workflow Logic (Simplified)
 
-1. **Order Validation** - Verify order data, addresses, and business rules
-2. **Inventory Check** - Confirm all items are available for purchase
-3. **Payment Processing** - Charge customer with retry logic and error handling
-4. **Inventory Reservation** - Lock items for this order to prevent overselling
-5. **Shipping Calculation** - Determine shipping costs and delivery estimates
-6. **Shipment Creation** - Generate shipping labels and tracking numbers
-7. **Order Status Update** - Update database with payment and shipping information
-8. **Customer Notification** - Send confirmation email with tracking details
-9. **Follow-up Scheduling** - Schedule post-delivery customer satisfaction check
+1.  Trigger on `order/created` event.
+2.  Invoke `ProcessPaymentFunction` using [`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows).
+3.  If payment succeeds:
+    a.  Run `UpdateInventoryStep`.
+    b.  Invoke `FulfillOrderFunction`.
+    c.  Run `SendOrderConfirmationEmailStep`.
+4.  If payment fails, send `UserPaymentFailedNotification`.
 
-### Use Cases
-- **E-commerce Stores**: Complete order-to-delivery automation
-- **B2B Marketplaces**: Handle complex multi-vendor order processing
-- **Subscription Boxes**: Coordinate inventory, packing, and shipping workflows
-- **Digital + Physical Products**: Mix downloadable and shippable items
-
-### Error Handling Strategy
-
-- **Validation Failures**: Immediately reject with detailed error messages
-- **Inventory Issues**: Cancel order and notify customer with alternatives
-- **Payment Failures**: Retry with backoff, then cancel order gracefully
-- **Shipping Problems**: Retry shipping creation, fallback to manual processing
+### Function Implementation (Orchestrator)
 
 ```typescript
-type OrderCreatedEvent = {
-  name: "order/created";
-  data: {
-    orderId: string;
-    userId: string;
-    items: Array<{
-      productId: string;
-      quantity: number;
-      price: number;
-    }>;
-    total: number;
-    paymentMethodId: string;
-    shippingAddress: {
-      street: string;
-      city: string;
-      state: string;
-      zip: string;
-      country: string;
-    };
-  };
-};
+import { inngest } from "../../inngest/client";
+import { NonRetriableError } from "inngest";
 
-export const processOrder = inngest.createFunction(
+// Assume other functions like processPaymentFunction, fulfillOrderFunction are defined elsewhere
+// and imported here. They would be separate Inngest functions.
+
+// Example: Order Orchestrator Function
+export const orderOrchestrator = inngest.createFunction(
   {
-    id: "process-order",
-    concurrency: { limit: 20 },
-    retries: 3
+    id: "order-orchestrator",
+    name: "E-commerce Order Orchestrator",
+    retries: 2 // Configure retries for the orchestrator itself
   },
   { event: "order/created" },
   async ({ event, step, logger }) => {
-    const { orderId, userId, items, total, paymentMethodId, shippingAddress } = event.data;
-    
-    logger.info("Processing order", { orderId, userId, total });
+    const { orderId, userId, items, totalAmount, paymentToken } = event.data;
+    logger.info("Starting order orchestration", { orderId, userId });
 
-    // Step 1: Validate order
-    const validation = await step.run("validate-order", async () => {
-      return await orderValidator.validate({
-        items,
-        total,
-        shippingAddress
+    let paymentResult;
+    try {
+      // Step 1: Invoke Payment Processing Function
+      paymentResult = await step.invoke("invoke-process-payment", {
+        function: "process-payment-function-id", // ID of the Inngest function to call
+        data: { orderId, userId, amount: totalAmount, token: paymentToken },
+        // Optional: specify a timeout for the invoked function
+        timeout: "5m"
       });
-    });
+      logger.info("Payment function invoked", { orderId, paymentResult });
 
-    if (!validation.valid) {
-      throw new Error(`Order validation failed: ${validation.errors.join(", ")}`);
-    }
-
-    // Step 2: Check inventory
-    const inventory = await step.run("check-inventory", async () => {
-      return await inventoryService.checkAvailability(items);
-    });
-
-    if (!inventory.available) {
-      await step.run("notify-out-of-stock", async () => {
-        return await notificationService.send({
-          userId,
-          type: "order_cancelled",
-          data: { orderId, reason: "out_of_stock", unavailableItems: inventory.unavailableItems }
-        });
-      });
-      throw new Error(`Items out of stock: ${inventory.unavailableItems.join(", ")}`);
-    }
-
-    // Step 3: Process payment
-    const payment = await step.run("process-payment", async () => {
-      try {
-        return await paymentService.charge({
-          amount: total,
-          paymentMethodId,
-          metadata: { orderId }
-        });
-      } catch (error) {
-        logger.error("Payment failed", { orderId, error: error.message });
-        throw error;
+      if (paymentResult.status !== "succeeded") {
+        throw new Error(`Payment failed with status: ${paymentResult.status}`);
       }
-    });
 
-    // Step 4: Reserve inventory
-    await step.run("reserve-inventory", async () => {
-      return await inventoryService.reserve(items, orderId);
-    });
-
-    // Step 5: Calculate shipping
-    const shipping = await step.run("calculate-shipping", async () => {
-      return await shippingService.calculateRates({
-        items,
-        destination: shippingAddress
+    } catch (error) {
+      logger.error("Payment processing failed", { orderId, error: error.message });
+      // Send event for user notification about payment failure
+      await step.sendEvent("send-payment-failed-notification", {
+        name: "user/payment_failed", // See: /quick-start/patterns#use-specific-event-names
+        data: { userId, orderId, reason: error.message },
       });
-    });
+      // Stop further processing for this order if payment fails critically
+      // If NonRetriableError is not thrown, this step might be retried by Inngest
+      throw new NonRetriableError("Payment processing critically failed.");
+    }
 
-    // Step 6: Create shipment
-    const shipment = await step.run("create-shipment", async () => {
-      return await shippingService.createShipment({
+    // Step 2: Update Inventory (runs only if payment succeeded)
+    await step.run("update-inventory", async () => {
+      return inventoryService.decrementStock(items);
+    });
+    logger.info("Inventory updated", { orderId });
+
+    // Step 3: Invoke Order Fulfillment Function
+    const fulfillmentResult = await step.invoke("invoke-fulfill-order", {
+      function: "fulfill-order-function-id", // ID of another Inngest function
+      data: { orderId, userId, items, paymentId: paymentResult.paymentId },
+    });
+    logger.info("Fulfillment function invoked", { orderId, fulfillmentResult });
+
+    // Step 4: Send Order Confirmation Email
+    await step.run("send-order-confirmation-email", async () => {
+      return emailService.sendOrderConfirmation({
+        email: event.data.customerEmail,
+        name: event.data.customerName,
         orderId,
-        items,
-        destination: shippingAddress,
-        service: shipping.recommendedService
+        trackingNumber: fulfillmentResult.trackingNumber,
       });
     });
 
-    // Step 7: Update order status
-    await step.run("update-order-status", async () => {
-      return await database.orders.update(orderId, {
-        status: "processing",
-        paymentId: payment.id,
-        trackingNumber: shipment.trackingNumber
-      });
-    });
-
-    // Step 8: Send confirmation email
-    await step.run("send-confirmation-email", async () => {
-      const user = await database.users.findById(userId);
-      return await emailService.send({
-        to: user.email,
-        template: "order-confirmation",
-        data: {
-          orderId,
-          items,
-          total,
-          trackingNumber: shipment.trackingNumber,
-          estimatedDelivery: shipment.estimatedDelivery
-        }
-      });
-    });
-
-    // Step 9: Schedule follow-up
-    await step.run("schedule-follow-up", async () => {
-      return await inngest.send({
-        name: "order/follow-up",
-        data: { orderId },
-        // Send follow-up after estimated delivery
-        ts: shipment.estimatedDelivery.getTime() + (24 * 60 * 60 * 1000) // +1 day
-      });
-    });
-
-    logger.info("Order processed successfully", { 
-      orderId, 
-      paymentId: payment.id, 
-      trackingNumber: shipment.trackingNumber 
-    });
-
-    return {
-      orderId,
-      status: "processed",
-      paymentId: payment.id,
-      trackingNumber: shipment.trackingNumber
-    };
+    logger.info("Order orchestration completed successfully", { orderId });
+    return { success: true, orderId, paymentId: paymentResult.paymentId };
   }
 );
+
+// Placeholder services
+const inventoryService = { decrementStock: async (items: any) => { console.log("Decrementing stock", items); return { success: true }; } };
+// emailService defined in previous example
 ```
 
-## Content Moderation Pipeline
+**Why Inngest Excels Here:**
+Inngest simplifies complex orchestrations. [`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows) allows breaking down the monolith into manageable, independently testable, and durable functions. Error handling within steps ensures issues like payment declines are handled gracefully without derailing the entire workflow.
 
-**What it does**: Implements AI-powered content moderation with human review for edge cases, automatic escalation, and machine learning feedback loops.
+**Learn More:**
+- [Official Guide: Composing Workflows with `step.invoke`](https://www.inngest.com/docs/guides/invoking-functions-directly)
+- [Concept: Function Composition](/concepts/functions#function-composition)
+- [Pattern: Idempotent Step Design](/quick-start/patterns#idempotent-step-design)
 
-**When to use**: Social platforms, user-generated content sites, marketplaces with reviews, or any application where content quality and safety are critical.
-
-### Key Features
-
-| Feature | Description | Business Value |
-|---------|-------------|----------------|
-| **AI + Human Hybrid** | AI handles clear cases, humans review ambiguous content | Scales moderation while maintaining quality |
-| **Confidence-Based Routing** | Routes content based on AI confidence levels | Optimizes human reviewer time and accuracy |
-| **SLA Management** | Enforces review timeframes with automatic escalation | Ensures consistent moderation speed |
-| **Feedback Loops** | Trains AI model with human decisions | Continuously improves AI accuracy over time |
-| **Priority Queuing** | Fast-tracks high-severity content for urgent review | Protects users from harmful content quickly |
-
-### Decision Flow
-
-```
-Content Submitted → Validation → AI Analysis
-                                     ↓
-High Confidence (>95%) → Auto Approve/Reject
-                                     ↓
-Low Confidence (<95%) → Human Review Queue
-                                     ↓
-24hr SLA → Senior Escalation → 4hr SLA → Auto-Reject
-```
-
-### Moderation Criteria
-
-- **Validation**: Basic format, length, and user reputation checks
-- **AI Analysis**: Toxicity, spam, inappropriate content detection
-- **Human Review**: Context-sensitive decisions, cultural nuances
-- **Senior Review**: Complex cases, policy edge cases, appeals
-
-### Use Cases
-- **Social Media Platforms**: Posts, comments, messages moderation
-- **Marketplace Reviews**: Product reviews and seller feedback
-- **Community Forums**: Discussion threads and user responses
-- **Creative Platforms**: User-uploaded art, videos, and stories
-
-```typescript
-type ContentSubmittedEvent = {
-  name: "content/submitted";
-  data: {
-    contentId: string;
-    userId: string;
-    type: "post" | "comment" | "image" | "video";
-    content: string;
-    metadata?: Record<string, any>;
-  };
-};
-
-export const moderateContent = inngest.createFunction(
-  {
-    id: "moderate-content",
-    concurrency: { limit: 50 },
-    rateLimit: { limit: 1000, period: "1h" }
-  },
-  { event: "content/submitted" },
-  async ({ event, step }) => {
-    const { contentId, userId, type, content } = event.data;
-
-    // Step 1: Basic validation
-    const validation = await step.run("validate-content", async () => {
-      return await contentValidator.validate({
-        type,
-        content,
-        userId
-      });
-    });
-
-    if (!validation.valid) {
-      await step.run("reject-invalid-content", async () => {
-        return await contentService.reject(contentId, validation.reasons);
-      });
-      return { status: "rejected", reason: "validation_failed" };
-    }
-
-    // Step 2: AI moderation
-    const aiModeration = await step.run("ai-moderation", async () => {
-      return await aiModerationService.analyze({
-        contentId,
-        type,
-        content
-      });
-    });
-
-    // Step 3: Decision based on AI confidence
-    if (aiModeration.confidence > 0.95) {
-      if (aiModeration.decision === "approve") {
-        await step.run("auto-approve", async () => {
-          return await contentService.approve(contentId);
-        });
-        return { status: "approved", method: "ai_auto" };
-      } else {
-        await step.run("auto-reject", async () => {
-          return await contentService.reject(contentId, aiModeration.reasons);
-        });
-        return { status: "rejected", method: "ai_auto", reasons: aiModeration.reasons };
-      }
-    }
-
-    // Step 4: Human review for low confidence cases
-    await step.run("queue-for-human-review", async () => {
-      return await humanReviewQueue.add({
-        contentId,
-        userId,
-        type,
-        content,
-        aiAnalysis: aiModeration,
-        priority: aiModeration.severity === "high" ? "urgent" : "normal"
-      });
-    });
-
-    // Step 5: Wait for human decision
-    const humanDecision = await step.waitForEvent("wait-for-human-decision", {
-      event: "content/human_reviewed",
-      timeout: "24h", // 24-hour SLA for review
-      if: `event.data.contentId == "${contentId}"`
-    });
-
-    if (!humanDecision) {
-      // Timeout - escalate to senior moderator
-      await step.run("escalate-review", async () => {
-        return await humanReviewQueue.escalate(contentId, "senior");
-      });
-
-      // Wait for senior moderator decision
-      const seniorDecision = await step.waitForEvent("wait-for-senior-decision", {
-        event: "content/senior_reviewed",
-        timeout: "4h",
-        if: `event.data.contentId == "${contentId}"`
-      });
-
-      if (!seniorDecision) {
-        // Auto-reject after timeout
-        await step.run("timeout-reject", async () => {
-          return await contentService.reject(contentId, ["review_timeout"]);
-        });
-        return { status: "rejected", method: "timeout" };
-      }
-
-      return { 
-        status: seniorDecision.data.approved ? "approved" : "rejected",
-        method: "senior_review",
-        reviewer: seniorDecision.data.reviewerId
-      };
-    }
-
-    // Step 6: Apply human decision
-    if (humanDecision.data.approved) {
-      await step.run("human-approve", async () => {
-        return await contentService.approve(contentId);
-      });
-    } else {
-      await step.run("human-reject", async () => {
-        return await contentService.reject(contentId, humanDecision.data.reasons);
-      });
-    }
-
-    // Step 7: Update AI model with human feedback
-    await step.run("update-ai-model", async () => {
-      return await aiModerationService.addTrainingData({
-        content,
-        aiPrediction: aiModeration,
-        humanDecision: humanDecision.data,
-        contentId
-      });
-    });
-
-    return {
-      status: humanDecision.data.approved ? "approved" : "rejected",
-      method: "human_review",
-      reviewer: humanDecision.data.reviewerId
-    };
-  }
-);
-```
+---
 
 ## Subscription Billing Workflow
 
-**What it does**: Handles complete subscription billing cycles with intelligent retry logic, dunning processes, and graceful subscription management.
+**What it does**: Manages recurring subscription payments, handles payment failures with dunning (retry) logic, and automates subscription lifecycle events like trial conversions and cancellations. This example showcases [scheduled functions](/concepts/functions#scheduled-functions) and stateful recovery.
 
-**When to use**: SaaS applications, subscription services, membership sites, or any business with recurring billing requirements.
+**When to use**: SaaS billing systems, membership sites, or any application with recurring revenue and automated payment collection.
 
-### Key Features
+### Key Features & Benefits
 
-| Feature | Description | Business Value |
-|---------|-------------|----------------|
-| **Smart Retry Logic** | Multiple payment attempts with strategic timing | Reduces involuntary churn from temporary payment issues |
-| **Dynamic Pricing** | Calculates taxes, discounts, and prorations | Ensures accurate billing across different customer scenarios |
-| **Dunning Management** | Automated email sequences for failed payments | Maximizes payment recovery with minimal manual effort |
-| **Customer Communication** | Proactive notifications throughout the billing process | Improves customer experience and payment success rates |
-| **Graceful Cancellation** | Handles failed payments with appropriate cleanup | Maintains good customer relationships even during cancellation |
+| Technical Capability | Business Value |
+|----------------------|----------------|
+| Scheduled Functions (`cron`) | Reliable monthly/annual billing cycles. [Docs](https://www.inngest.com/docs/guides/scheduled-functions) |
+| Durable State (`step.run` for retries) | Remembers failed payment attempts and retry counts for dunning. |
+| [`step.sleep()`](/concepts/steps#stepsleep---scheduled-delays) for Dunning | Implements grace periods and timed retry attempts for failed payments. |
+| Event-Driven Updates ([`step.sendEvent()`](/concepts/steps#step-tools)) | Notifies other systems of subscription status changes (active, past_due, canceled). |
 
-### Billing Process Flow
+### Core Workflow Logic (Simplified for a single subscription)
 
-1. **Billing Calculation** - Compute final amount with taxes and discounts
-2. **Payment Attempts** - Try payment up to 3 times with delays
-3. **Success Handling** - Update subscription and send receipt
-4. **Failure Management** - Start dunning process for failed payments
-5. **Dunning Sequence** - 7-day → reminder → 7-day → final warning → 3-day → cancel
+1.  Scheduled function triggers monthly via [cron](/concepts/functions#scheduled-functions).
+2.  For each active subscription:
+    a.  Attempt payment using [`step.run()`](/concepts/steps#steprun---execute--retry).
+    b.  If payment fails, increment retry count (stored via step memoization if designed carefully or via external DB).
+    c.  [`step.sleep()`](/concepts/steps#stepsleep---scheduled-delays) for a few days (dunning period).
+    d.  Retry payment. Repeat for X attempts.
+    e.  If still failing, mark subscription `past_due` and send `subscription/payment_failed` event.
+    f.  If successful, send `subscription/payment_succeeded` event.
 
-### Dunning Timeline
-
-| Day | Action | Purpose |
-|-----|--------|---------|
-| 0 | Initial payment failure | Customer notified immediately |
-| 7 | First dunning email | Gentle reminder to update payment |
-| 14 | Final warning email | Urgent notice with 3-day deadline |
-| 17 | Subscription cancelled | Graceful cancellation with reinstatement options |
-
-### Use Cases
-- **SaaS Platforms**: Monthly/annual subscription billing
-- **Streaming Services**: Handle payment method updates and retries
-- **E-learning Platforms**: Manage course subscriptions and access
-- **Membership Sites**: Recurring membership fee processing
+### Function Implementation (Illustrative Billing Cycle Function)
 
 ```typescript
+import { inngest } from "../../inngest/client";
+import { NonRetriableError } from "inngest";
+
+const MAX_PAYMENT_RETRIES = 3;
+
+// This function would typically be triggered by a cron schedule
+// For simplicity, let's imagine it's triggered per subscription due for billing
 export const processSubscriptionBilling = inngest.createFunction(
   {
     id: "process-subscription-billing",
-    concurrency: { limit: 10, key: "event.data.customerId" },
-    retries: 3
+    name: "Process Monthly Subscription Billing",
+    // Example: Triggered by an event like `billing_cycle/due` which could be 
+    // emitted by another scheduled function that finds due subscriptions.
+    // Alternatively, this function itself could be a cron job that fetches due subscriptions.
+    concurrency: { limit: 100 } // Control load on payment gateway
   },
-  { event: "billing/cycle_due" },
-  async ({ event, step }) => {
-    const { subscriptionId, customerId, amount, dueDate } = event.data;
+  { event: "billing_cycle/due" }, // Contains { subscriptionId, userId, amount }
+  async ({ event, step, logger }) => {
+    const { subscriptionId, userId, amount } = event.data;
+    logger.info("Processing billing for subscription", { subscriptionId, userId });
 
-    // Step 1: Get customer and subscription details
-    const [customer, subscription] = await Promise.all([
-      step.run("fetch-customer", () => 
-        customerService.getById(customerId)
-      ),
-      step.run("fetch-subscription", () => 
-        subscriptionService.getById(subscriptionId)
-      )
-    ]);
+    let paymentSucceeded = false;
+    let lastPaymentError = null;
 
-    // Step 2: Calculate final amount (with taxes, discounts)
-    const billing = await step.run("calculate-billing", async () => {
-      return await billingCalculator.calculate({
-        subscription,
-        customer,
-        baseAmount: amount
-      });
-    });
-
-    // Step 3: Attempt payment
-    let attempt = 1;
-    const maxAttempts = 3;
-
-    while (attempt <= maxAttempts) {
-      const payment = await step.run(`charge-attempt-${attempt}`, async () => {
-        try {
-          return await paymentService.charge({
-            customerId,
-            amount: billing.totalAmount,
-            paymentMethodId: customer.defaultPaymentMethodId,
-            metadata: { subscriptionId, attempt }
-          });
-        } catch (error) {
-          return { success: false, error: error.message, code: error.code };
+    for (let attempt = 1; attempt <= MAX_PAYMENT_RETRIES; attempt++) {
+      try {
+        await step.run(`attempt-payment-${attempt}`, async () => {
+          return paymentGateway.chargeRecurring(userId, amount, subscriptionId);
+        });
+        paymentSucceeded = true;
+        logger.info("Payment successful for subscription", { subscriptionId, attempt });
+        break; // Exit loop on success
+      } catch (error) {
+        logger.warn(`Payment attempt ${attempt} failed for subscription`, { subscriptionId, error: error.message });
+        lastPaymentError = error.message;
+        if (error instanceof NonRetriableError || paymentGateway.isPermanentDecline(error)) {
+          // Don't retry for permanent declines (e.g., card stolen, account closed)
+          logger.error("Permanent payment decline for subscription", { subscriptionId, reason: error.message });
+          break;
         }
-      });
-
-      if (payment.success) {
-        // Success - update subscription and send receipt
-        await Promise.all([
-          step.run("update-subscription", () =>
-            subscriptionService.markPaid(subscriptionId, payment.id)
-          ),
-          step.run("send-receipt", () =>
-            emailService.send({
-              to: customer.email,
-              template: "payment-receipt",
-              data: { 
-                amount: billing.totalAmount,
-                paymentId: payment.id,
-                subscription 
-              }
-            })
-          )
-        ]);
-
-        return { 
-          status: "paid",
-          paymentId: payment.id,
-          attempt 
-        };
-      }
-
-      // Payment failed
-      if (payment.code === "card_declined" && attempt < maxAttempts) {
-        // Wait before retry (1 day, then 3 days)
-        const waitTime = attempt === 1 ? "1d" : "3d";
-        await step.sleep(`wait-before-retry-${attempt}`, waitTime);
-        
-        // Send retry notification
-        await step.run(`send-retry-notification-${attempt}`, () =>
-          emailService.send({
-            to: customer.email,
-            template: "payment-retry",
-            data: { 
-              attempt: attempt + 1,
-              nextAttempt: waitTime,
-              amount: billing.totalAmount 
-            }
-          })
-        );
-        
-        attempt++;
-      } else {
-        // Permanent failure or max attempts reached
-        break;
+        // For transient errors, wait before next attempt if not the last one
+        if (attempt < MAX_PAYMENT_RETRIES) {
+          await step.sleep(`wait-before-retry-${attempt}`, `${attempt * 2}d`); // Exponential-ish backoff
+        }
       }
     }
 
-    // All payment attempts failed
-    await step.run("handle-payment-failure", async () => {
-      return await subscriptionService.markOverdue(subscriptionId);
-    });
-
-    // Start dunning process
-    await step.run("start-dunning", async () => {
-      return await inngest.send({
-        name: "billing/dunning_start",
-        data: { subscriptionId, customerId, failedAmount: billing.totalAmount }
+    if (paymentSucceeded) {
+      await step.sendEvent("send-payment-succeeded-event", {
+        name: "subscription/payment_succeeded",
+        data: { subscriptionId, userId, amount },
       });
-    });
-
-    // Notify customer of failure
-    await step.run("send-failure-notification", () =>
-      emailService.send({
-        to: customer.email,
-        template: "payment-failed",
-        data: { 
-          amount: billing.totalAmount,
-          subscription,
-          updatePaymentUrl: `${process.env.APP_URL}/billing/update-payment`
-        }
-      })
-    );
-
-    return { 
-      status: "failed",
-      attempts: maxAttempts 
-    };
+      // Update subscription status in DB (e.g., next_billing_date)
+      await step.run("update-db-subscription-success", () => 
+        db.subscriptions.update(subscriptionId, { status: "active", lastPayment: new Date() })
+      );
+    } else {
+      await step.sendEvent("send-payment-failed-event", {
+        name: "subscription/payment_failed_final",
+        data: { subscriptionId, userId, reason: lastPaymentError },
+      });
+      // Update subscription status in DB (e.g., mark as past_due or canceled)
+      await step.run("update-db-subscription-failure", () => 
+        db.subscriptions.update(subscriptionId, { status: "past_due", reason: lastPaymentError })
+      );
+      logger.error("Final payment failure for subscription", { subscriptionId, reason: lastPaymentError });
+    }
+    return { subscriptionId, paymentSucceeded };
   }
 );
 
-// Dunning process
-export const dunningProcess = inngest.createFunction(
-  {
-    id: "dunning-process",
-    concurrency: { limit: 5, key: "event.data.customerId" }
+// Placeholder payment gateway and DB
+const paymentGateway = {
+  chargeRecurring: async (userId: string, amount: number, subId: string) => { 
+    console.log("Charging recurring", { userId, amount, subId }); 
+    // Simulate occasional failures
+    if (Math.random() < 0.3) throw new Error("Transient payment gateway error");
+    return { success: true, transactionId: "txn_"+subId }; 
   },
-  { event: "billing/dunning_start" },
-  async ({ event, step }) => {
-    const { subscriptionId, customerId, failedAmount } = event.data;
-
-    // Wait 7 days
-    await step.sleep("wait-7-days", "7d");
-
-    // Check if payment was updated
-    const subscription = await step.run("check-subscription-status", () =>
-      subscriptionService.getById(subscriptionId)
-    );
-
-    if (subscription.status === "active") {
-      return { status: "resolved", method: "customer_updated_payment" };
-    }
-
-    // Send first dunning email
-    await step.run("send-dunning-email-1", () =>
-      emailService.send({
-        to: subscription.customer.email,
-        template: "dunning-reminder-1",
-        data: { subscription, failedAmount }
-      })
-    );
-
-    // Wait another 7 days
-    await step.sleep("wait-another-7-days", "7d");
-
-    // Check again
-    const updatedSubscription = await step.run("check-subscription-status-2", () =>
-      subscriptionService.getById(subscriptionId)
-    );
-
-    if (updatedSubscription.status === "active") {
-      return { status: "resolved", method: "customer_updated_payment" };
-    }
-
-    // Send final warning
-    await step.run("send-final-warning", () =>
-      emailService.send({
-        to: subscription.customer.email,
-        template: "dunning-final-warning",
-        data: { subscription, cancelDate: "in 3 days" }
-      })
-    );
-
-    // Wait 3 more days
-    await step.sleep("wait-3-days", "3d");
-
-    // Final check
-    const finalSubscription = await step.run("final-subscription-check", () =>
-      subscriptionService.getById(subscriptionId)
-    );
-
-    if (finalSubscription.status === "active") {
-      return { status: "resolved", method: "customer_updated_payment" };
-    }
-
-    // Cancel subscription
-    await step.run("cancel-subscription", () =>
-      subscriptionService.cancel(subscriptionId, "payment_failure")
-    );
-
-    await step.run("send-cancellation-notice", () =>
-      emailService.send({
-        to: subscription.customer.email,
-        template: "subscription-cancelled",
-        data: { subscription, reason: "payment_failure" }
-      })
-    );
-
-    return { status: "cancelled" };
-  }
-);
+  isPermanentDecline: (error: any) => error.message.includes("card_lost_or_stolen") // Example
+};
+const db = { 
+  subscriptions: { 
+    update: async (id: string, data: any) => { console.log("Updating DB for sub", id, data); return { success: true }; }
+  } 
+};
 ```
+
+**Why Inngest Excels Here:**
+Complex dunning logic that spans days or weeks is notoriously hard to build with traditional job queues. Inngest's `step.sleep()` and durable step retries simplify this immensely, allowing you to write straightforward loops and conditional logic that reliably manage the entire subscription lifecycle.
+
+**Learn More:**
+- [Official Guide: Building Subscription Billing](https://www.inngest.com/docs/guides/subscription-billing-template) (if a specific guide exists, otherwise use more general links)
+- [Concept: Scheduled Functions](/concepts/functions#scheduled-functions)
+- [Pattern: Idempotent Step Design](/quick-start/patterns#idempotent-step-design) (crucial for billing)
+
+---
+
+## Content Moderation Pipeline
+
+**What it does**: Implements a multi-stage content moderation workflow, potentially involving AI analysis, human review queues, and automated actions based on moderation decisions. This shows conditional logic and human-in-the-loop patterns using [`step.waitForEvent()`](/concepts/steps#stepwaitforevent---wait-for-external-input).
+
+**When to use**: User-generated content platforms (forums, social media, marketplaces) requiring content review for policy compliance, spam detection, or quality control.
+
+### Key Features & Benefits
+
+| Technical Capability | Business Value |
+|----------------------|----------------|
+| [`step.waitForEvent()`](/concepts/steps#stepwaitforevent---wait-for-external-input) | Pauses workflow for human review, resumes on decision event. |
+| Conditional Logic with Steps | Routes content differently based on AI confidence or human input. |
+| [`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows) / [`step.sendEvent()`](/concepts/steps#step-tools) | Integrates with AI services or human review task systems. |
+| [Audit Trail (Implicit)](/concepts/events#why-events-matter) | All moderation steps and decisions are logged for review. |
+
+### Function Implementation (Conceptual)
+
+```typescript
+import { inngest } from "../../inngest/client";
+
+export const contentModerationPipeline = inngest.createFunction(
+  {
+    id: "content-moderation-pipeline",
+    name: "Content Moderation Workflow",
+    // Potentially high volume, so concurrency might be needed for AI step
+    concurrency: { limit: 20 } // See: /concepts/flow-control#concurrency-control
+  },
+  { event: "content/submitted" }, // data: { contentId, text, userId }
+  async ({ event, step, logger }) => {
+    const { contentId, text, userId } = event.data;
+    logger.info("Starting content moderation", { contentId });
+
+    // Step 1: AI Analysis
+    const aiResult = await step.run("ai-text-analysis", async () => {
+      return aiModerationService.analyzeText(text);
+      // aiResult might be like: { isSafe: boolean, confidence: number, categories: string[] }
+    });
+    logger.info("AI analysis complete", { contentId, safe: aiResult.isSafe, confidence: aiResult.confidence });
+
+    if (aiResult.isSafe && aiResult.confidence > 0.95) {
+      // Step 2a: Auto-approve high-confidence safe content
+      await step.run("auto-approve-content", async () => {
+        return contentService.updateStatus(contentId, "approved");
+      });
+      logger.info("Content auto-approved", { contentId });
+      return { contentId, status: "approved", method: "auto" };
+    }
+    
+    if (!aiResult.isSafe && aiResult.confidence > 0.90) {
+      // Step 2b: Auto-reject high-confidence unsafe content
+      await step.run("auto-reject-content", async () => {
+        return contentService.updateStatus(contentId, "rejected", aiResult.categories);
+      });
+      logger.info("Content auto-rejected", { contentId, categories: aiResult.categories });
+      return { contentId, status: "rejected", method: "auto", reason: aiResult.categories.join(", ") };
+    }
+
+    // Step 3: Low confidence or borderline - send to human review
+    await step.run("queue-for-human-review", async () => {
+      return humanReviewSystem.createTask(contentId, text, userId, aiResult);
+    });
+    logger.info("Content queued for human review", { contentId });
+
+    // Step 4: Wait for human review decision
+    const reviewEvent = await step.waitForEvent("wait-for-human-review", {
+      event: "content/human_review_completed",
+      timeout: "3d", // Max wait time for human review
+      if: `event.data.contentId == "${contentId}"`, // Match this specific content
+    });
+
+    if (reviewEvent) {
+      // Step 5a: Human review received
+      const { decision, reviewedBy, comments } = reviewEvent.data;
+      logger.info("Human review received", { contentId, decision, reviewedBy });
+      await step.run("apply-human-decision", async () => {
+        return contentService.updateStatus(contentId, decision, comments, reviewedBy);
+      });
+      return { contentId, status: decision, method: "human", reviewedBy };
+    } else {
+      // Step 5b: Timeout - no human review in time
+      logger.warn("Human review timed out", { contentId });
+      // Escalate or default action (e.g., keep pending or auto-reject with caution)
+      await step.run("handle-review-timeout", async () => {
+        return escalationService.notifyAdmins(contentId, "Human review timed out");
+      });
+      return { contentId, status: "pending_escalation", method: "timeout" };
+    }
+  }
+);
+
+// Placeholder services
+const aiModerationService = { analyzeText: async (text: string) => ({ isSafe: Math.random() > 0.3, confidence: Math.random(), categories: ["spam"] }) };
+const contentService = { updateStatus: async (id: string, status: string, ..._args: any[]) => console.log("Updating content status", {id, status}) };
+const humanReviewSystem = { createTask: async (..._args: any[]) => console.log("Creating human review task") };
+const escalationService = { notifyAdmins: async (..._args: any[]) => console.log("Notifying admins") };
+```
+
+**Why Inngest Excels Here:**
+Human-in-the-loop workflows are often complex. [`step.waitForEvent()`](/concepts/steps#stepwaitforevent---wait-for-external-input) simplifies this by allowing a workflow to pause indefinitely (or with a timeout) until a specific action occurs, all while maintaining state and context without external databases for tracking.
+
+**Learn More:**
+- [Official Guide: Human in the Loop Workflows](https://www.inngest.com/docs/guides/human-in-the-loop) (if available)
+- [Concept: Waiting for Events](/concepts/events#waiting-for-events) (or point to `step.waitForEvent` in Steps)
+- [Pattern: Conditional Logic with Steps](/quick-start/patterns) (if we create this pattern explicitly)
+
+---
 
 ## Data Processing Pipeline
 
-**What it does**: Processes large datasets with parallel batch processing, comprehensive error handling, and detailed result aggregation.
+**What it does**: Processes large datasets in stages, potentially involving extraction, transformation, and loading (ETL). This example could showcase [`step.parallel()`](/concepts/steps#stepparallel---concurrent-operations) for processing chunks of data concurrently and [`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows) for modular pipeline stages.
 
-**When to use**: ETL operations, bulk data imports, file processing workflows, or any scenario requiring high-throughput data processing with reliability.
+**When to use**: Batch data processing, ETL jobs, report generation from large datasets, AI model training data preparation.
 
-### Key Features
+### Key Features & Benefits
 
-| Feature | Description | Business Value |
-|---------|-------------|----------------|
-| **Batch Processing** | Groups events for efficient parallel processing | Maximizes throughput while managing resource usage |
-| **Parallel Execution** | Processes multiple files simultaneously | Dramatically reduces total processing time |
-| **Validation & Error Handling** | Validates files before processing and handles failures gracefully | Prevents bad data from corrupting downstream systems |
-| **Progress Tracking** | Detailed results with success/failure breakdown | Provides visibility into processing status and issues |
-| **Configurable Batching** | Adjustable batch sizes and timeouts | Optimizes for different data volumes and processing requirements |
+| Technical Capability | Business Value |
+|----------------------|----------------|
+| [`step.parallel()`](/concepts/steps#stepparallel---concurrent-operations) | Speeds up processing by handling data chunks concurrently. |
+| [`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows) | Modular pipeline stages (Extract, Transform, Load as separate functions). |
+| [Error Handling & Retries](/quick-start/patterns#error-handling-in-steps) | Ensures failed chunks or stages can be retried independently. |
+| [Observability](/quick-start/patterns#function-design-patterns) | Track progress and identify bottlenecks in long-running data jobs. |
 
-### Processing Strategy
+*(Implementation for Data Processing Pipeline would be more extensive and is omitted here for brevity but would follow similar patterns of defining event types and function logic with detailed step usage as shown in prior examples.)*
 
-- **File Validation**: Check format, size, schema compliance before processing
-- **Batch Organization**: Group files into manageable batches for parallel processing
-- **Error Isolation**: Failed files don't affect successful ones in the same batch
-- **Result Aggregation**: Comprehensive summary with detailed failure reporting
-- **Notification System**: Alerts on completion with processing statistics
+**Learn More:**
+- [Concept: Parallel Steps](/concepts/steps#stepparallel---concurrent-operations)
+- [Guide: Large Scale Data Processing with Inngest](https://www.inngest.com/docs/guides/batch-processing) (if a specific guide exists)
 
-### Batch Configuration
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| **Max Batch Size** | 10 files | Balance parallelism with resource usage |
-| **Batch Timeout** | 30 seconds | Ensure timely processing of smaller batches |
-| **Processing Batch Size** | 5 files | Parallel processing within each batch |
-| **Inter-batch Delay** | 2 seconds | Prevent overwhelming downstream systems |
-| **Concurrency Limit** | 5 simultaneous pipelines | Control resource consumption |
-
-### Use Cases
-- **Data Warehousing**: Process CSV/JSON imports into analytics databases
-- **Media Processing**: Batch convert, resize, or analyze uploaded media files
-- **Document Processing**: Extract data from PDFs, images, or other documents
-- **API Data Sync**: Bulk synchronization between different systems
-
-```typescript
-export const processDataUpload = inngest.createFunction(
-  {
-    id: "process-data-upload",
-    concurrency: { limit: 5 },
-    batchEvents: { maxSize: 10, timeout: "30s" }
-  },
-  { event: "data/file_uploaded" },
-  async ({ events, step }) => {
-    const files = events.map(e => e.data);
-
-    // Step 1: Validate all files
-    const validations = await step.run("validate-files", async () => {
-      return await Promise.all(
-        files.map(file => fileValidator.validate(file))
-      );
-    });
-
-    const validFiles = files.filter((file, index) => validations[index].valid);
-    const invalidFiles = files.filter((file, index) => !validations[index].valid);
-
-    // Notify about invalid files
-    if (invalidFiles.length > 0) {
-      await step.run("notify-invalid-files", () =>
-        notificationService.sendBatch({
-          type: "file_validation_failed",
-          files: invalidFiles
-        })
-      );
-    }
-
-    if (validFiles.length === 0) {
-      return { status: "no_valid_files" };
-    }
-
-    // Step 2: Process files in parallel batches
-    const batchSize = 5;
-    const batches = [];
-    
-    for (let i = 0; i < validFiles.length; i += batchSize) {
-      batches.push(validFiles.slice(i, i + batchSize));
-    }
-
-    const results = [];
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
-      
-      const batchResults = await step.run(`process-batch-${batchIndex}`, async () => {
-        return await Promise.all(
-          batch.map(async (file) => {
-            try {
-              const processed = await dataProcessor.process(file);
-              return { fileId: file.id, success: true, result: processed };
-            } catch (error) {
-              return { 
-                fileId: file.id, 
-                success: false, 
-                error: error.message 
-              };
-            }
-          })
-        );
-      });
-
-      results.push(...batchResults);
-
-      // Small delay between batches to avoid overwhelming downstream systems
-      if (batchIndex < batches.length - 1) {
-        await step.sleep(`wait-between-batches-${batchIndex}`, "2s");
-      }
-    }
-
-    // Step 3: Aggregate results
-    const summary = await step.run("aggregate-results", async () => {
-      const successful = results.filter(r => r.success);
-      const failed = results.filter(r => !r.success);
-
-      return {
-        totalFiles: validFiles.length,
-        successful: successful.length,
-        failed: failed.length,
-        successfulFiles: successful.map(r => r.fileId),
-        failedFiles: failed.map(r => ({ fileId: r.fileId, error: r.error }))
-      };
-    });
-
-    // Step 4: Store results
-    await step.run("store-results", () =>
-      resultStore.save({
-        batchId: events[0].data.batchId,
-        summary,
-        processedAt: new Date()
-      })
-    );
-
-    // Step 5: Send completion notification
-    await step.run("send-completion-notification", () =>
-      notificationService.send({
-        type: "batch_processing_complete",
-        data: summary
-      })
-    );
-
-    return summary;
-  }
-);
-```
-
-import { Callout } from 'nextra/components'
-
-<Callout type="info">
-**Implementation Tips**: These examples showcase production-ready patterns with comprehensive error handling. Start with simpler versions and gradually add complexity as your requirements grow. Each example can be adapted to your specific business logic and external service integrations.
-</Callout>
-
-<Callout type="warning">
-**Testing Recommendation**: Always test these complex workflows thoroughly in a staging environment before deploying to production. Use Inngest's test engine to simulate various failure scenarios and edge cases.
-</Callout>
-
-## Next Steps
-
-Now that you've seen these comprehensive examples:
-
-- **[Testing Strategies](/quick-start/patterns#testing-functions)** - Learn how to test complex workflows effectively
-- **[Error Handling Patterns](/quick-start/patterns#error-handling)** - Deep dive into robust error handling strategies  
-- **[Production Best Practices](/concepts/flow-control#best-practices)** - Optimize these patterns for scale and reliability
+These examples should provide a solid foundation for understanding how to apply Inngest's powerful features to build a wide variety of reliable and scalable applications. Remember to consult the **[Core Concepts](/concepts)** and **[Patterns & Anti-Patterns](/quick-start/patterns)** for deeper insights as you build.

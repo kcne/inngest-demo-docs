@@ -1,663 +1,272 @@
 # Events
 
-Events are the heartbeat of Inngest's event-driven architecture. They represent immutable records of things that happen in your system - user signups, order completions, file uploads, or any significant state change. Think of events as **announcements**: "Hey, something important just happened!" Your [Functions](/concepts/functions) listen for these announcements and automatically spring into action. <br/> <br/>
+Events are the heartbeat of Inngest's [event-driven architecture](https://en.wikipedia.org/wiki/Event-driven_architecture). They represent immutable records of things that happen in your system - user signups, order completions, file uploads, or any significant state change. Think of events as **announcements**: "Hey, something important just happened!" Your [Functions](/concepts/functions) listen for these announcements and automatically spring into action. <br/> <br/>
 
 <img src="/events.png" alt="Events" />
 
 ## Why Events Matter
 
-Events solve a fundamental problem in application architecture: **tight coupling between your core application and background processing**. Without events, your API routes become bloated with background work, making them slow and brittle. Events decouple these concerns, allowing your application to respond instantly while background work happens reliably in parallel.
+Events solve a fundamental problem in application architecture: **tight coupling between your core application and background processing**. Without events, your API routes become bloated with background work, making them slow and brittle. Events decouple these concerns, allowing your application to respond instantly while background work happens reliably in parallel using Inngest's [durable execution](/concepts/steps) model.
 
 ### Without Events (Traditional Queue System)
 ```typescript
-// Complex setup required
-const Queue = require('bull');
+// Complex setup: multiple queues, worker processes, manual error handling
+const Queue = require('bull'); // Example: BullMQ
 const emailQueue = new Queue('email', process.env.REDIS_URL);
 const analyticsQueue = new Queue('analytics', process.env.REDIS_URL);
 
-// API route
 app.post('/api/users', async (req, res) => {
   const user = await db.users.create(req.body);
-  
-  // Add jobs to different queues
   await emailQueue.add('welcome', { email: user.email });
   await analyticsQueue.add('track', { userId: user.id, event: 'user_created' });
-  
-  res.json(user);
+  res.json(user); // API response is quick, but setup is complex
 });
 
-// Separate worker processes needed
-emailQueue.process('welcome', async (job) => {
-  // If this fails, job restarts from scratch
-  await emailService.sendWelcome(job.data.email);
-});
-
-analyticsQueue.process('track', async (job) => {
-  // Separate error handling for each queue
-  try {
-    await analyticsService.track(job.data.event, job.data.userId);
-  } catch (error) {
-    // Manual retry logic needed
-    throw new Error('Analytics failed');
-  }
-});
+// Separate worker for emails
+emailQueue.process('welcome', async (job) => emailService.sendWelcome(job.data.email));
+// Separate worker for analytics with its own error/retry logic
+analyticsQueue.process('track', async (job) => analyticsService.track(job.data.event, job.data.userId));
 ```
 
 ### With Events (Inngest)
 ```typescript
-// API route
+// API route: simple event sending
 app.post('/api/users', async (req, res) => {
   const user = await db.users.create(req.body);
-  
-  // Just announce what happened
-  await inngest.send({
+  await inngest.send({ // See: https://www.inngest.com/docs/events
     name: "user/created",
     data: { userId: user.id, email: user.email }
   });
-  
-  res.json(user);
+  res.json(user); // API response is fast
 });
 
-// Functions handle the rest automatically
+// Functions automatically handle events with built-in reliability
 export const sendWelcomeEmail = inngest.createFunction(
-  { id: "send-welcome" },
-  { event: "user/created" },
+  { id: "send-welcome" }, { event: "user/created" }, // Trigger
   async ({ event }) => await emailService.sendWelcome(event.data.email)
 );
-
 export const trackUser = inngest.createFunction(
-  { id: "track-user" },
-  { event: "user/created" },
+  { id: "track-user" }, { event: "user/created" }, // Trigger
   async ({ event }) => await analyticsService.track('user_created', event.data.userId)
 );
 ```
-
-**The result**: Your API is fast, your background work is reliable, and adding new workflows doesn't require changing existing code.
+**The result**: Your API is fast, background work is reliable via [Inngest Functions](/concepts/functions), and adding new workflows (e.g., a new function listening to `user/created`) doesn't require changing existing API code.
 
 ## Event Structure
 
-Every Inngest event has a simple structure that makes them easy to work with and debug. This consistent format means your functions always know what to expect, and you can inspect events easily in the Inngest dashboard. The structure follows a predictable pattern that scales from simple notifications to complex workflow triggers.
+Every Inngest event follows a simple, consistent JSON structure, crucial for predictability in your functions and easy inspection in the [Inngest dashboard](https://www.inngest.com/docs/platform/monitor). This structure comprises a `name` and an optional `data` payload. [See official Event Format docs](https://www.inngest.com/docs/features/events-triggers/event-format).
 
 ```typescript
 {
-  name: "user/signup",           // Event identifier (required)
-  data: {                       // Your payload (optional)
-    userId: "usr_123",
-    email: "jane@example.com"
+  "name": "user/signup",     // Required: String identifier for the event type
+  "data": {                 // Optional: JSON-serializable payload with event-specific info
+    "userId": "usr_123",
+    "email": "jane@example.com",
+    "plan": "premium"
   }
+  // Optional fields like `id`, `ts`, `v` are auto-added by Inngest
 }
 ```
-
 **Key Components:**
-- **Name**: Use clear, hierarchical names like `user/signup`, `order/created`, `payment/completed`
-- **Data**: Include everything your functions need - events are immutable, so you can't add data later
-- **Consistency**: The same structure across all events makes your code predictable and maintainable
+-   **`name` (string, required)**: A unique identifier for the event type. Use clear, hierarchical names (e.g., `user/signup`, `order/payment_succeeded`). [See Naming Tips](https://www.inngest.com/docs/features/events-triggers/event-format#tips-for-event-naming).
+-   **`data` (object, optional)**: A JSON-serializable payload containing details relevant to the event. Design this carefully as events are immutable once sent.
 
 ## Sending Events
 
-Events can be sent from anywhere in your application, providing maximum flexibility for triggering workflows. This decoupling means you can emit events from API routes, database triggers, webhooks, or background jobs without worrying about where the processing happens. The flexibility allows your workflows to respond to changes no matter where they originate in your system.
+Events can be sent from anywhere in your application—API routes, database triggers ([CDC patterns](https://en.wikipedia.org/wiki/Change_data_capture)), webhooks, or other background jobs. This flexibility decouples event creation from processing. The Inngest SDK (`inngest.send()`) is the primary method. [See Sending Events guide](https://www.inngest.com/docs/events).
 
-**Common Sources:**
+**Common Sources & Examples:**
 ```typescript
-// From API routes
+// From API routes (e.g., Next.js, Express)
 await inngest.send({
   name: "order/created",
-  data: { orderId: order.id, userId: order.userId }
+  data: { orderId: order.id, userId: order.userId, total: order.amount }
 });
 
-// From database triggers  
+// From webhook handlers (e.g., Stripe, GitHub)
 await inngest.send({
-  name: "user/created", 
-  data: { userId: result.id, email: result.email }
+  name: `stripe/invoice.payment_succeeded`, // Dynamic event name
+  data: stripeEvent.data.object // Forwarding webhook payload
 });
 
-// From webhooks
-await inngest.send({
-  name: `payment/${event.type}`,
-  data: event.data.object
-});
-
-// Batch sending for efficiency
+// Batch sending for efficiency (reduces network calls)
 await inngest.send([
-  { name: "user/updated", data: { userId: "123" } },
-  { name: "profile/completed", data: { userId: "123" } }
-]);
+  { name: "user/profile_updated", data: { userId: "123", changes: ["email"] } },
+  { name: "user/activity_logged", data: { userId: "123", activity: "logged_in" } }
+]); // See: https://www.inngest.com/docs/reference/typescript/sdk#send
 ```
 
-**Learn more**: [Official Events & Triggers Guide](https://www.inngest.com/docs/features/events-triggers)
+## Common Event Patterns
 
-## Common Patterns
-
-Here are the most useful event patterns that solve common workflow challenges. These patterns help you build scalable, maintainable systems by organizing how events flow through your application. Understanding these patterns is essential for designing robust event-driven architectures that can grow with your application.
+Leverage these patterns to build scalable and maintainable event-driven systems.
 
 ### Fan-Out
-One event triggers multiple independent functions, allowing you to process different aspects of the same occurrence in parallel. This pattern is perfect for user signups where you need to send emails, track analytics, create billing records, and perform other independent tasks. Each function operates independently, so if one fails, others continue processing successfully.
+One event triggers multiple independent functions. This is ideal for decoupling processes; e.g., a `user/signup` event might trigger `SendWelcomeEmail`, `UpdateAnalytics`, and `ProvisionTrialWorkspace` functions, each handling a separate concern. [See Fan-out Guide](https://www.inngest.com/docs/guides/fan-out-jobs).
 
 ```typescript
-// One event...
-await inngest.send({ name: "user/signup", data: { userId: "123" } });
-
-// ...triggers multiple functions
-export const sendWelcome = inngest.createFunction(
-  { id: "welcome" }, { event: "user/signup" },
-  async ({ event }) => { /* send email */ }
-);
-
-export const trackSignup = inngest.createFunction(
-  { id: "track" }, { event: "user/signup" },
-  async ({ event }) => { /* analytics */ }
-);
+// Event: user/signed_up
+// Functions listening:
+// 1. sendWelcomeEmailFn - Handles sending a welcome email.
+// 2. setupNewUserAnalyticsFn - Tracks new user in analytics.
+// 3. createTrialResourcesFn - Provisions initial resources for a new user.
 ```
 
 ### Event Chains
-Functions can trigger other functions by sending new events, creating sequential workflows where each step builds on the previous one. This pattern is ideal for complex business processes that have natural dependencies, like order processing where payment must complete before fulfillment begins. Event chains provide clear separation of concerns while maintaining workflow integrity.
+A function, after completing its work, sends a new event that triggers another function. This creates a sequence of operations. For example, `order/created` -> `ProcessPaymentFunction` -> (sends `order/payment_succeeded`) -> `FulfillOrderFunction`. This differs from [`step.invoke()`](/concepts/functions#function-composition) as it's fully decoupled.
 
 ```typescript
-export const processPayment = inngest.createFunction(
-  { id: "process-payment" },
-  { event: "order/created" },
-  async ({ event, step }) => {
-    await step.run("charge", () => stripe.charge(event.data.total));
-    
-    // Trigger next workflow
-    await step.run("trigger-fulfillment", () =>
-      inngest.send({ name: "order/paid", data: event.data })
-    );
-  }
+// In ProcessPaymentFunction, after successful payment:
+await step.run("trigger-fulfillment", () =>
+  inngest.send({ name: "order/paid", data: event.data }) // `event.data` from `order/created`
 );
+// FulfillOrderFunction would be triggered by "order/paid"
 ```
-
-**Learn more**: [Function triggers in detail](/concepts/functions#triggers)
-
-## Debugging Events
-
-Use the Inngest Dev Server to inspect events in real-time and debug your workflows. The dev server provides a visual interface showing all events flowing through your system, which functions they trigger, and the results of each execution. This visibility is crucial for understanding event flow and troubleshooting issues in your workflows.
-
-```bash
-npx inngest-cli dev
-# Open http://localhost:8288 to see events in real-time
-```
-
-**What you can debug:**
-- **Event flow**: See which events are being sent and when
-- **Function triggers**: Verify that events are triggering the correct functions  
-- **Execution results**: Monitor function success, failures, and retry attempts
-- **Payload inspection**: Examine event data to ensure it contains the expected information
-
-## Next Steps
-
-Now that you understand events, learn how they trigger workflows:
-
-**[→ Functions: Building Workflows](/concepts/functions)**
-
-Functions are where your business logic lives. They respond to events and orchestrate complex workflows using [Steps](/concepts/steps) for durability.
-
-**Also explore:**
-- [Real-World Examples](/quick-start/examples) - See events in complete workflows
-- [Patterns & Anti-Patterns](/quick-start/patterns) - Event design best practices
-- [Official Events Documentation](https://www.inngest.com/docs/features/events-triggers) - Complete technical reference 
 
 ## Event Matching and Filtering
 
-Functions can listen to events in sophisticated ways beyond simple name matching. Event matching allows you to build flexible workflows that respond to specific conditions, multiple event types, or event families. This flexibility is crucial for building maintainable event-driven systems that can evolve with your business logic.
+Functions can subscribe to events with fine-grained control using matching and filtering rules defined in the [function trigger](https://www.inngest.com/docs/reference/functions/create#trigger). This is crucial for routing events to the correct workflows.
 
 ### Pattern Matching
-Listen to multiple related events using wildcards:
+Use wildcards in event names for broader subscriptions.
+-   `user/*`: Matches `user/created`, `user/updated`, `user/deleted`.
+-   `order/{created,updated,cancelled}`: Matches specific order lifecycle events.
 
 ```typescript
-// Listen to all user events
-export const userEventHandler = inngest.createFunction(
-  { id: "user-event-handler" },
-  { event: "user/*" },  // Matches user/created, user/updated, user/deleted
-  async ({ event, step }) => {
-    await step.run("log-user-event", () =>
-      auditLog.record(event.name, event.data)
-    );
-  }
-);
-
-// Listen to specific event patterns
-export const orderEventHandler = inngest.createFunction(
-  { id: "order-events" },
-  { event: "order/{created,updated,cancelled}" },
-  async ({ event, step }) => {
-    await step.run("update-analytics", () =>
-      analytics.trackOrderEvent(event.name, event.data)
-    );
-  }
+// Listens to all events starting with "user/"
+export const userActivityLogger = inngest.createFunction(
+  { id: "user-activity-logger" },
+  { event: "user/*" }, // Wildcard match
+  async ({ event }) => { /* Log event.name and event.data */ }
 );
 ```
+[See Wildcard Event Triggers](https://www.inngest.com/docs/guides/multiple-triggers#wildcard-event-triggers).
 
 ### Multiple Event Types
-One function can respond to different events:
+A single function can listen to an array of distinct event names.
 
 ```typescript
-export const notificationHandler = inngest.createFunction(
-  { id: "notifications" },
-  { event: ["user/signup", "order/completed", "payment/failed"] },
-  async ({ event, step }) => {
-    await step.run("send-notification", () => {
-      switch (event.name) {
-        case "user/signup":
-          return sendWelcomeNotification(event.data);
-        case "order/completed":
-          return sendOrderConfirmation(event.data);
-        case "payment/failed":
-          return sendPaymentAlert(event.data);
-      }
-    });
-  }
+export const userLifecycleManager = inngest.createFunction(
+  { id: "user-lifecycle" },
+  // Responds to either of these events
+  { event: ["user/trial_started", "user/subscription_cancelled"] },
+  async ({ event }) => { /* Handle based on event.name */ }
 );
 ```
+[See Multiple Event Triggers](https://www.inngest.com/docs/guides/multiple-triggers).
 
-### Conditional Matching
-Use expressions to filter events based on data:
+### Conditional Filtering (`if` expression)
+Filter events based on their `data` payload using a JSONata expression. The function only triggers if the expression evaluates to true.
 
 ```typescript
-export const highValueOrderProcessor = inngest.createFunction(
-  { id: "high-value-orders" },
+export const largeOrderAlert = inngest.createFunction(
+  { id: "large-order-alert" },
   { 
     event: "order/created",
-    if: "event.data.total > 1000"  // Only orders over $1000
+    // Only trigger if order total is greater than $1000
+    if: "event.data.total > 1000" 
   },
-  async ({ event, step }) => {
-    await step.run("flag-for-review", () =>
-      fraudReview.flagOrder(event.data.orderId)
-    );
-    
-    await step.run("assign-vip-support", () =>
-      support.assignVIP(event.data.customerId)
-    );
-  }
+  async ({ event }) => { /* Alert operations team */ }
 );
 ```
+[See Conditional Event Triggers](https://www.inngest.com/docs/guides/conditional-triggers).
 
-## Event Payload Best Practices
+## Debugging Events
 
-Designing effective event payloads is crucial for maintainable, scalable event-driven systems. Well-structured event data makes your functions more reliable, easier to debug, and simpler to evolve over time. Consider these guidelines when designing your event payloads.
+The [Inngest Dev Server](https://www.inngest.com/docs/dev-server) (`npx inngest-cli dev`) is invaluable for local development. It provides a UI (typically `http://localhost:8288`) to inspect events, see which functions they trigger, and view logs. This helps verify event flow and troubleshoot function behavior.
 
-### What to Include
-**Essential Data:**
-- **Identifiers**: Always include relevant IDs (userId, orderId, etc.)
-- **Timestamps**: When the event occurred (often auto-generated)
-- **Context**: Enough data for functions to do their work without additional API calls
-- **Metadata**: Information about the source, version, or correlation IDs
+**Key Debugging Capabilities:**
+-   **Live Event Stream**: View events as they are sent.
+-   **Function Invocation Details**: See which function runs were triggered by which events.
+-   **Payload Inspection**: Examine the `data` of any event.
+-   **Step-by-Step Execution**: For functions using [steps](/concepts/steps), see the outcome of each step.
 
+## Productionizing Events: Advanced Topics
+
+Consider these aspects for robust, scalable event-driven systems.
+
+### Event Payload Best Practices
+
+Well-designed payloads are key to maintainable functions.
+
+**What to Include:**
+-   **Essential Identifiers**: Relevant IDs (`userId`, `orderId`).
+-   **Sufficient Context**: Data needed by listeners to act without many extra lookups.
+-   **Timestamps**: When the original action occurred.
+-   **Source/Correlation IDs**: For tracing and debugging across systems.
+
+**What to Avoid:**
+-   **Overly Large Payloads**: Inngest events have a size limit (e.g., 256KB, check current [limitations](https://www.inngest.com/docs/platform/limitations)). For large data (files, images), send a reference (e.g., S3 URL, database ID) instead of the data itself.
+-   **Sensitive Information**: PII like passwords, raw credit card numbers. Tokenize or encrypt if necessary, or better yet, design workflows to avoid needing it in event data.
+-   **Internal Implementation Details**: Avoid exposing database schemas or internal state that might change and break downstream consumers.
+
+[See official guidance on Event Payloads](https://www.inngest.com/docs/features/events-triggers/event-format).
+
+### Error Handling for Events
+
+Address failures in both sending and processing events.
+
+**Sending Failures:**
+The `inngest.send()` call can fail (network issues, Inngest API errors). Implement application-level retries or dead-lettering for critical events if immediate sending is crucial.
 ```typescript
-// ✅ Good - Rich, self-contained event
-await inngest.send({
-  name: "order/created",
-  data: {
-    orderId: "ord_123",
-    userId: "usr_456",
-    total: 99.99,
-    currency: "USD",
-    items: [
-      { productId: "prod_789", quantity: 2, price: 49.99 }
-    ],
-    shippingAddress: {
-      country: "US",
-      state: "CA",
-      zipCode: "94105"
-    },
-    paymentMethod: "card",
-    source: "web"
-  }
-});
-```
-
-### What to Avoid
-**Problematic Patterns:**
-- **Sensitive data**: Credit card numbers, passwords, personal information
-- **Large payloads**: Files, images, or massive datasets (use references instead)
-- **Internal details**: Database schemas, internal IDs that could change
-- **Computed values**: Data that can be derived from other fields
-
-```typescript
-// ❌ Bad - Sensitive and unnecessary data
-await inngest.send({
-  name: "payment/processed",
-  data: {
-    orderId: "ord_123",
-    creditCardNumber: "4111111111111111", // ❌ Sensitive
-    internalDatabaseId: 98765,            // ❌ Internal detail
-    largeImageData: "base64...",          // ❌ Too large
-    calculatedTax: 8.99                   // ❌ Can be computed
-  }
-});
-
-// ✅ Better - Clean, secure, essential data
-await inngest.send({
-  name: "payment/processed",
-  data: {
-    orderId: "ord_123",
-    paymentId: "pay_789",
-    amount: 99.99,
-    currency: "USD",
-    status: "succeeded"
-  }
-});
-```
-
-### Size and Performance
-**Event Limits:**
-- Keep events under 64KB for optimal performance
-- Use references for large data (store in database, reference by ID)
-- Consider pagination for arrays with many items
-- Batch related events when possible
-
-## Error Handling for Events
-
-Event sending and processing can fail for various reasons, from network issues to validation errors. Understanding how to handle these failures gracefully is essential for building robust event-driven systems. Proper error handling ensures your events are delivered reliably and your workflows can recover from failures.
-
-### Event Sending Failures
-Handle failures when sending events to Inngest:
-
-```typescript
-export async function createUser(userData) {
-  try {
-    // Create user in database first
-    const user = await db.users.create(userData);
-    
-    // Then send event
-    await inngest.send({
-      name: "user/created",
-      data: { userId: user.id, email: user.email }
-    });
-    
-    return user;
-  } catch (error) {
-    if (error.name === 'InngestEventError') {
-      // Event sending failed - user was created but event wasn't sent
-      logger.error('Failed to send user/created event', {
-        userId: user.id,
-        error: error.message
-      });
-      
-      // Could implement retry logic or manual event sending
-      await retryEventSending(user);
-    }
-    throw error;
-  }
+try {
+  await inngest.send(criticalEvent);
+} catch (error) {
+  logger.error("Failed to send critical event to Inngest", { error });
+  // Implement retry or add to a local fallback queue
 }
 ```
 
-### Retry Strategies
-Implement robust retry logic for critical events:
+**Function Processing Failures:**
+[Inngest functions](/concepts/functions) have built-in [retries](/concepts/functions#configuration). For non-retryable business errors, throw `NonRetriableError` from Inngest SDK. Use `onFailure` handlers for terminal failures.
+[See Error Handling Guide](https://www.inngest.com/docs/guides/error-handling).
 
+### Testing Event-Driven Workflows
+
+Thorough testing is vital.
+
+**Unit Testing Senders**: Mock `inngest.send()` to verify your application code emits correct events.
 ```typescript
-async function sendEventWithRetry(event, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      await inngest.send(event);
-      return; // Success!
-    } catch (error) {
-      if (attempt === maxRetries) {
-        // Final attempt failed
-        logger.error('Event sending failed after all retries', {
-          event: event.name,
-          attempts: maxRetries,
-          error: error.message
-        });
-        
-        // Could store in dead letter queue for manual processing
-        await deadLetterQueue.add(event);
-        throw error;
-      }
-      
-      // Wait before retry (exponential backoff)
-      const delay = Math.pow(2, attempt) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-}
-```
-
-### Function Error Handling
-Handle errors within event-triggered functions:
-
-```typescript
-export const processOrder = inngest.createFunction(
-  { id: "process-order" },
-  { event: "order/created" },
-  async ({ event, step }) => {
-    try {
-      const order = await step.run("fetch-order", () =>
-        orderService.getById(event.data.orderId)
-      );
-      
-      if (!order) {
-        // Non-retryable error - order doesn't exist
-        throw new NonRetriableError(`Order ${event.data.orderId} not found`);
-      }
-      
-      await step.run("process-payment", () =>
-        paymentService.process(order)
-      );
-      
-    } catch (error) {
-      // Log the error with context
-      console.error('Order processing failed', {
-        orderId: event.data.orderId,
-        error: error.message,
-        retryable: !(error instanceof NonRetriableError)
-      });
-      
-      // Re-throw to trigger Inngest's retry logic
-      throw error;
-    }
-  }
-);
-```
-
-## Testing Events
-
-Testing event-driven systems requires different strategies than traditional request-response testing. You need to verify that events are sent correctly, functions are triggered properly, and workflows complete successfully. Effective testing ensures your event-driven architecture works reliably in production.
-
-### Unit Testing Event Sending
-Test that your code sends the correct events:
-
-```typescript
-// userService.test.ts
-import { inngest } from './inngest';
-
-// Mock inngest.send
-jest.mock('./inngest', () => ({
-  inngest: {
-    send: jest.fn()
-  }
+// Using Jest
+jest.mock('./inngestClient', () => ({
+  inngest: { send: jest.fn() }
 }));
-
-describe('UserService', () => {
-  it('sends user/created event when user is created', async () => {
-    const userData = { email: 'test@example.com', name: 'Test User' };
-    
-    const user = await userService.create(userData);
-    
-    expect(inngest.send).toHaveBeenCalledWith({
-      name: 'user/created',
-      data: {
-        userId: user.id,
-        email: user.email,
-        name: user.name
-      }
-    });
-  });
-});
+// ... test your service ...
+expect(inngest.send).toHaveBeenCalledWith(expectedEventMatcher);
 ```
 
-### Integration Testing with Test Engine
-Test complete workflows using Inngest's test engine:
+**Integration Testing Functions**: Use the [`InngestTestEngine`](https://www.inngest.com/docs/reference/testing#inngesttestengine) from `@inngest/test` to send events and assert function execution, step completion, and outcomes. This is the most effective way to test workflows.
 
 ```typescript
-// workflow.integration.test.ts
+// workflow.test.ts
 import { InngestTestEngine } from "inngest/test";
-import { processOrder, sendConfirmation } from "./functions";
+import { myInngestFunction } from "./functions";
 
-describe('Order Processing Workflow', () => {
-  let testEngine: InngestTestEngine;
-
-  beforeEach(() => {
-    testEngine = new InngestTestEngine({
-      functions: [processOrder, sendConfirmation]
-    });
-  });
-
-  it('processes order and sends confirmation', async () => {
-    // Send the triggering event
-    await testEngine.send({
-      name: "order/created",
-      data: { orderId: "ord_123", userId: "usr_456", total: 99.99 }
-    });
-
-    // Wait for functions to complete
-    const processOrderRuns = await testEngine.waitForRuns("process-order");
-    expect(processOrderRuns).toHaveLength(1);
-    expect(processOrderRuns[0].status).toBe("completed");
-
-    // Check that downstream functions were triggered
-    const confirmationRuns = await testEngine.waitForRuns("send-confirmation");
-    expect(confirmationRuns).toHaveLength(1);
-    expect(confirmationRuns[0].status).toBe("completed");
-  });
-
-  it('handles payment failures gracefully', async () => {
-    // Mock payment service to fail
-    jest.spyOn(paymentService, 'process').mockRejectedValue(
-      new Error('Payment failed')
-    );
-
-    await testEngine.send({
-      name: "order/created",
-      data: { orderId: "ord_123" }
-    });
-
-    const runs = await testEngine.waitForRuns("process-order");
-    expect(runs[0].status).toBe("failed");
-    
-    // Verify retry behavior
-    expect(runs[0].attempts).toBeGreaterThan(1);
-  });
-});
+const engine = new InngestTestEngine({ functions: [myInngestFunction] });
+await engine.send({ name: "trigger/event", data: { ... } });
+const runs = await engine.waitForRuns("myInngestFunction");
+expect(runs[0].status).toBe("completed");
 ```
+[See official Testing Guide](https://www.inngest.com/docs/reference/testing).
 
-### Testing Event Patterns
-Verify that functions respond to the correct events:
+### Performance Considerations
 
-```typescript
-describe('Event Pattern Matching', () => {
-  it('user event handler responds to all user events', async () => {
-    const events = [
-      { name: "user/created", data: { userId: "123" } },
-      { name: "user/updated", data: { userId: "123" } },
-      { name: "user/deleted", data: { userId: "123" } },
-      { name: "order/created", data: { orderId: "456" } } // Should not trigger
-    ];
+Optimize event handling for scalability.
 
-    for (const event of events) {
-      await testEngine.send(event);
-    }
+**Batch Event Sending**: Use `inngest.send([...events])` to send multiple events in one API call, reducing network overhead. This is highly recommended for bulk operations.
 
-    const runs = await testEngine.waitForRuns("user-event-handler");
-    
-    // Should have 3 runs (only user/* events)
-    expect(runs).toHaveLength(3);
-    expect(runs.map(r => r.event.name)).toEqual([
-      "user/created", "user/updated", "user/deleted"
-    ]);
-  });
-});
-```
+**Async Sending**: For non-critical events (e.g., analytics), consider sending them asynchronously from your main request path (`setImmediate` or a lightweight local queue) to avoid impacting API latency.
 
-## Performance Considerations
+**Payload Size**: Smaller payloads are processed faster. Follow [best practices](/concepts/events#event-payload-best-practices) to keep them lean.
 
-Event performance impacts your entire system's responsiveness and cost. Understanding how to optimize event sending, sizing, and processing helps you build efficient, scalable event-driven architectures. Proper performance optimization ensures your events don't become a bottleneck as your system grows.
+## Next Steps
 
-### Batch Event Sending
-Send multiple events efficiently to reduce overhead:
+With a solid understanding of events, you're ready to see how they trigger powerful workflows:
 
-```typescript
-// ✅ Efficient - Batch multiple related events
-const events = users.map(user => ({
-  name: "user/created",
-  data: { userId: user.id, email: user.email }
-}));
+**[→ Functions: Building Workflows](/concepts/functions)**
 
-await inngest.send(events); // Single API call
+Explore how [Functions](/concepts/functions) use events as triggers to execute business logic, and how [Steps](/concepts/steps) within those functions provide durability.
 
-// ❌ Inefficient - Individual sends
-for (const user of users) {
-  await inngest.send({
-    name: "user/created", 
-    data: { userId: user.id, email: user.email }
-  });
-}
-```
-
-### Event Size Optimization
-Keep events lean for better performance:
-
-```typescript
-// ✅ Optimized - Reference large data
-await inngest.send({
-  name: "document/processed",
-  data: {
-    documentId: "doc_123",
-    userId: "usr_456",
-    processingResult: "completed",
-    // Reference instead of including large data
-    resultUrl: "https://storage.example.com/results/doc_123.json"
-  }
-});
-
-// ❌ Poor performance - Large embedded data
-await inngest.send({
-  name: "document/processed", 
-  data: {
-    documentId: "doc_123",
-    largeProcessingResult: {
-      // 50KB of data - too large for events
-      pages: [...], // Massive array
-      fullText: "...", // Complete document text
-      metadata: {...} // Extensive metadata
-    }
-  }
-});
-```
-
-### Async Event Sending
-Don't block user requests with event sending:
-
-```typescript
-// ✅ Good - Fire and forget for non-critical events
-app.post('/api/pageview', async (req, res) => {
-  // Respond immediately
-  res.json({ success: true });
-  
-  // Send analytics event asynchronously
-  setImmediate(async () => {
-    try {
-      await inngest.send({
-        name: "analytics/pageview",
-        data: { userId: req.user.id, page: req.body.page }
-      });
-    } catch (error) {
-      // Log but don't fail the request
-      logger.error('Failed to send pageview event', error);
-    }
-  });
-});
-
-// ✅ Better - Use background job for guaranteed delivery
-app.post('/api/critical-action', async (req, res) => {
-  const result = await performCriticalAction(req.body);
-  
-  // Queue event for reliable background sending
-  await eventQueue.add('send-event', {
-    name: "action/completed",
-    data: { actionId: result.id, userId: req.user.id }
-  });
-  
-  res.json(result);
-});
-``` 
+**Also explore:**
+-   [Real-World Examples](/quick-start/examples) - Events in action.
+-   [Patterns & Anti-Patterns](/quick-start/patterns) - Designing event-driven systems.
+-   [Official Events & Triggers Documentation](https://www.inngest.com/docs/features/events-triggers) - Comprehensive Inngest reference.

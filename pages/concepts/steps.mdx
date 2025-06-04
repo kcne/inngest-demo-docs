@@ -1,660 +1,159 @@
 # Steps
 
-Steps are Inngest's solution to the fundamental problem of building reliable distributed systems: **what happens when things fail?** 
+Steps are Inngest's solution to the fundamental problem of building reliable distributed systems: **what happens when things fail?** Steps are the core of Inngest's [Durable Execution](https://www.inngest.com/blog/principles-of-durable-execution) engine.
 
-In traditional systems, failed jobs restart from the beginning, losing all progress. Steps create **checkpoints** in your [Functions](/concepts/functions) so only failed operations retry - successful work is preserved forever. <br/><br/>
+In traditional systems, failed jobs restart from the beginning, losing all progress and potentially causing duplicate work. Steps create **[checkpoints](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#how-steps-work)** in your [Functions](/concepts/functions) so only failed operations retry - successful work is preserved forever, making workflows [idempotent](https://en.wikipedia.org/wiki/Idempotence#Computer_science). <br/> <br/>
 
 <img src="/steps.png" alt="Steps" />
 
-
 ## The Reliability Problem
 
-Imagine an order processing workflow with five operations. Without steps, a failure at step 4 means starting over:
+Imagine an order processing workflow with five operations. Without steps, a failure at step 4 means starting over, which can lead to issues like duplicate charges or re-sending notifications.
 
 ```typescript
 // ❌ Traditional approach - fragile
 export async function processOrder(orderId) {
   const order = await fetchOrder(orderId);        // Step 1
   const payment = await chargePayment(order);     // Step 2  
-  const inventory = await reserveItems(order);    // Step 3
-  const shipment = await createShipment(order);   // Step 4 ← FAILS
-  const email = await sendConfirmation(order);    // Step 5
-  
-  // If shipment fails, we start over and:
-  // - Fetch the order again (unnecessary)
-  // - Charge payment again (dangerous!)
-  // - Reserve inventory again (could fail if no stock left)
+  const inventory = await updateInventory(order); // Step 3
+  const shipment = await createShipment(order);   // Step 4 - If this fails, ALL steps re-run!
+  await sendNotification(order, shipment);      // Step 5
 }
 ```
-
-With steps, each successful operation creates a checkpoint:
-
-```typescript
-// ✅ Inngest approach - durable
-export const processOrder = inngest.createFunction(
-  { id: "process-order" },
-  { event: "order/created" },
-  async ({ event, step }) => {
-    const order = await step.run("fetch-order", () =>
-      fetchOrder(event.data.orderId)
-    ); // ✅ Checkpoint 1
-    
-    const payment = await step.run("charge-payment", () =>
-      chargePayment(order)
-    ); // ✅ Checkpoint 2
-    
-    const inventory = await step.run("reserve-items", () =>
-      reserveItems(order)
-    ); // ✅ Checkpoint 3
-    
-    const shipment = await step.run("create-shipment", () =>
-      createShipment(order)
-    ); // ❌ Fails here
-    
-    // Only the shipment step retries - all previous work is preserved!
-  }
-);
-```
-
-**The difference**: When shipment fails, only that step retries. Payment isn't charged again, inventory isn't re-reserved - your data stays consistent.
 
 ## How Steps Work
 
-Steps transform your functions into durable, resumable workflows that can survive any failure. When you use steps, Inngest creates checkpoints at each operation, storing both the inputs and outputs permanently. This checkpoint system means your functions can pause, restart, and resume from exactly where they left off, even across server restarts, deployments, or infrastructure failures.
-
-### Step Execution Model
-Each step executes in isolation and communicates with Inngest's execution engine. When a step completes successfully, its result is stored permanently and will never re-execute, even if the function is retried. If a step fails, only that specific step retries while all previous successful steps return their cached results instantly. This execution model ensures consistent state and prevents duplicate operations that could corrupt your data.
-
-```
-Your Function          Inngest Platform
-     │                        │
-     ├─ step.run("step1") ────→ Execute & Store Result
-     ├─ step.run("step2") ────→ Execute & Store Result  
-     ├─ step.run("step3") ────→ ❌ Fails
-     │                        │
-     │  ← Function Retries ────┤
-     │                        │
-     ├─ step.run("step1") ────→ Return Cached Result ✅
-     ├─ step.run("step2") ────→ Return Cached Result ✅
-     ├─ step.run("step3") ────→ Retry Execution
-```
-
-### Memoization
-Once a step succeeds, its result is **memoized** (cached permanently). This caching happens at the Inngest platform level, not in your application memory, so results persist across deployments and infrastructure changes. Subsequent executions return the cached result instantly, making retries incredibly fast while preserving expensive operations like file downloads or complex computations. This memoization is one of the key features that makes Inngest workflows both reliable and efficient.
+Steps transform your functions into durable, resumable workflows that can survive any failure. When you use steps, Inngest creates checkpoints at each operation, storing both the inputs and outputs permanently. This checkpoint system means your functions can pause, restart, and resume from exactly where they left off, even across server restarts, deployments, or infrastructure failures. [Learn about Inngest's execution model](https://www.inngest.com/docs/learn/how-functions-are-executed).
 
 ```typescript
-export const dataProcessing = inngest.createFunction(
-  { id: "data-processing" },
-  { event: "file/uploaded" },
-  async ({ event, step }) => {
-    // First execution: Downloads 1GB file
-    // Retry: Returns cached result instantly ⚡
-    const data = await step.run("download-file", () =>
-      downloadLargeFile(event.data.fileUrl)
-    );
-    
-    // First execution: Processes for 10 minutes  
-    // Retry: Returns cached result instantly ⚡
-    const processed = await step.run("process-data", () =>
-      heavyDataProcessing(data)
-    );
-    
-    // Only this step runs on retry
-    await step.run("save-results", () =>
-      saveToDatabase(processed)
-    );
-  }
-);
-```
+// ✅ Inngest approach - resilient
+import { inngest } from "../client"; // Your Inngest client
 
-**Learn more**: [How Inngest Functions Execute](https://www.inngest.com/docs/learn/how-functions-are-executed)
-
-## Step Types
-
-Steps are the building blocks of durable execution, each designed for specific workflow needs. The four main step types cover all common workflow patterns: executing code with retries, adding time delays, waiting for external events, and calling other functions. Understanding when to use each type helps you build more robust and maintainable workflows that handle real-world complexity gracefully.
-
-### step.run() - Execute & Retry
-The foundation of durable execution. Wraps any code that might fail and provides automatic retry with exponential backoff. Use `step.run()` for any operation that could fail due to network issues, temporary service outages, or rate limiting. This includes database operations, API calls, file operations, and email sending - essentially any external interaction that could be unreliable.
-
-```typescript
-export const userOnboarding = inngest.createFunction(
-  { id: "user-onboarding" },
-  { event: "user/signup" },
-  async ({ event, step }) => {
-    // Database operations
-    const user = await step.run("fetch-user", () =>
-      db.users.findById(event.data.userId)
-    );
-    
-    // External API calls
-    const profile = await step.run("enrich-profile", () =>
-      enrichmentService.getProfile(user.email)
-    );
-    
-    // Email delivery
-    await step.run("send-welcome", () =>
-      emailService.send({
-        to: user.email,
-        template: "welcome",
-        data: { name: user.name, profile }
-      })
-    );
-  }
-);
-```
-
-### step.sleep() - Add Delays
-Pause execution for any duration without consuming server resources. Unlike traditional sleep functions that block threads, `step.sleep()` completely suspends the function and resumes it at the specified time. The function can sleep for **minutes, hours, days, or weeks** making it perfect for delayed notifications, follow-up sequences, grace periods, or any time-based workflow logic. This is essential for multi-step workflows that need to respect timing constraints or user preferences.
-
-```typescript
-export const dripEmailCampaign = inngest.createFunction(
-  { id: "drip-campaign" },
-  { event: "user/signup" },
-  async ({ event, step }) => {
-    // Send immediate welcome
-    await step.run("send-welcome", () =>
-      sendEmail(event.data.email, "welcome")
-    );
-
-    // Wait 3 days
-    await step.sleep("wait-3-days", "3d");
-
-    // Send tips email
-    await step.run("send-tips", () =>
-      sendEmail(event.data.email, "getting-started-tips")
-    );
-
-    // Wait 1 week  
-    await step.sleep("wait-1-week", "7d");
-
-    // Send feature highlights
-    await step.run("send-features", () =>
-      sendEmail(event.data.email, "feature-highlights")
-    );
-  }
-);
-```
-
-**Time formats**: `"30s"`, `"5m"`, `"2h"`, `"1d"`, `"1w"`, `"30d"`
-
-### step.waitForEvent() - Wait for External Input
-Pause until specific [Events](/concepts/events) occur, enabling human-in-the-loop workflows and external system integration. This step type transforms linear workflows into interactive, responsive processes that can wait for user actions, manual approvals, webhook callbacks, or other system events. The function completely suspends execution until the matching event arrives or a timeout is reached. This is crucial for approval workflows, user onboarding sequences, payment confirmations, and any process that requires external input or coordination between systems.
-
-```typescript
-export const contentModerationWorkflow = inngest.createFunction(
-  { id: "content-moderation" },
-  { event: "content/submitted" },
-  async ({ event, step }) => {
-    // AI moderation
-    const aiResult = await step.run("ai-moderation", () =>
-      aiModerationService.analyze(event.data.content)
-    );
-    
-    if (aiResult.confidence < 0.8) {
-      // Queue for human review
-      await step.run("queue-for-review", () =>
-        humanReviewQueue.add(event.data.contentId)
-      );
-      
-      // Wait for human decision (max 24 hours)
-      const humanDecision = await step.waitForEvent("wait-for-review", {
-        event: "content/reviewed",
-        timeout: "24h",
-        if: `event.data.contentId == "${event.data.contentId}"`
-      });
-      
-      if (humanDecision) {
-        // Apply human decision
-        await step.run("apply-decision", () =>
-          applyModerationDecision(humanDecision.data)
-        );
-      } else {
-        // Timeout - escalate or auto-reject
-        await step.run("handle-timeout", () =>
-          escalateToSeniorModerator(event.data.contentId)
-        );
-      }
-    }
-  }
-);
-```
-
-**Learn more**: [Event matching patterns in Events](/concepts/events#event-matching-patterns)
-
-### step.invoke() - Call Other Functions
-Execute other [Functions](/concepts/functions) and wait for their results with full durability guarantees. This enables function composition where complex workflows are built from smaller, focused functions that can be developed, tested, and maintained independently. The invoked function runs with its own retry logic, error handling, and observability while participating in the larger workflow. This pattern promotes code reuse and helps break down complex business processes into manageable, composable units.
-
-```typescript
-export const orderOrchestrator = inngest.createFunction(
-  { id: "order-orchestrator" },
+export const processOrderWithSteps = inngest.createFunction(
+  { id: "process-order-with-steps" },
   { event: "order/created" },
   async ({ event, step }) => {
-    // Call payment processing function
-    const payment = await step.invoke("process-payment", {
-      function: processPaymentFunction,
-      data: {
-        orderId: event.data.orderId,
-        amount: event.data.total
-      }
-    });
+    const order = await step.run("fetch-order", () => 
+      fetchOrder(event.data.orderId)
+    ); // See: step.run reference (https://www.inngest.com/docs/reference/functions/step-run)
 
-    if (payment.status === "succeeded") {
-      // Call fulfillment function
-      const fulfillment = await step.invoke("fulfill-order", {
-        function: fulfillOrderFunction,
-        data: {
-          orderId: event.data.orderId,
-          paymentId: payment.id
-        }
-      });
-      
-      // Call notification function
-      await step.invoke("send-confirmation", {
-        function: sendConfirmationFunction,
-        data: {
-          orderId: event.data.orderId,
-          trackingNumber: fulfillment.trackingNumber
-        }
-      });
-    }
+    const payment = await step.run("charge-payment", () => 
+      chargePayment(order)
+    );
+
+    const inventory = await step.run("update-inventory", () => 
+      updateInventory(order)
+    );
+
+    // If createShipment fails, only this step.run() retries.
+    // fetch-order, charge-payment, and update-inventory are NOT re-executed.
+    const shipment = await step.run("create-shipment", () => 
+      createShipment(order)
+    );
+
+    await step.run("send-notification", () => 
+      sendNotification(order, shipment)
+    );
+
+    return { orderId: order.id, shipmentId: shipment.id };
   }
 );
 ```
 
-**Benefits**: Compose complex workflows from smaller, focused functions. Each sub-function has its own retry logic and observability.
+### Step Execution Model
+Each step executes in isolation and communicates with Inngest's execution engine. When a step completes successfully, its result is stored permanently and will never re-execute, even if the function is retried. If a step fails, only that specific step retries while all previous successful steps return their [memoized](/concepts/steps#memoization) results. [Dive deeper into the step lifecycle](https://www.inngest.com/docs/features/inngest-functions/steps-workflows/step-execution-lifecycle).
+
+### Memoization
+Successful step outputs are saved (memoized) and reused if the function retries. This prevents duplicate work and ensures steps are [idempotent](https://en.wikipedia.org/wiki/Idempotence#Computer_science). For example, if `chargePayment()` succeeds and `updateInventory()` fails, `chargePayment()` won't run again on retry – Inngest uses its saved result. [Read more on Memoization in Inngest](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#memoization).
+
+## Step Tools
+
+The `step` object provides various tools for orchestrating complex workflows:
+
+| Tool | Purpose & Key Features | Official Docs |
+|------|------------------------|---------------|
+| **`step.run()`** | Execute a unit of work, retry on failure, memoize result. The most common step tool. | [step.run()](https://www.inngest.com/docs/reference/functions/step-run) |
+| **`step.sleep()`** | Pause execution for a duration (e.g., "5m", "1d"). Useful for scheduled follow-ups or delays. | [step.sleep()](https://www.inngest.com/docs/reference/functions/step-sleep) |
+| **`step.waitForEvent()`** | Pause until a specific event arrives. Ideal for approvals or external signals. | [step.waitForEvent()](https://www.inngest.com/docs/reference/functions/step-wait-for-event) |
+| **`step.invoke()`** | Call another Inngest function and wait for its result. For composing workflows. | [step.invoke()](https://www.inngest.com/docs/reference/functions/step-invoke) |
+| **`step.sendEvent()`** | Send one or more events. For triggering other functions or continuing a workflow. | [step.sendEvent()](https://www.inngest.com/docs/reference/functions/step-send-event) |
+| **`step.parallel()`** | Run multiple asynchronous operations concurrently and wait for all to complete. | [step.parallel()](https://www.inngest.com/docs/reference/functions/step-parallel) |
 
 ## Advanced Step Patterns
 
-These patterns demonstrate how to handle complex real-world scenarios using step combinations. Advanced patterns help you build sophisticated workflows that adapt to different conditions, process data efficiently, and handle dynamic requirements. Understanding these patterns is essential for building production-grade workflows that can handle the complexity and variability of real business processes.
+Beyond simple sequential execution, steps enable sophisticated workflow patterns that handle real-world complexity. These patterns are essential for building robust, production-grade applications.
 
-### Conditional Steps
-Steps can be wrapped in conditional logic for dynamic workflows. This pattern allows your workflows to adapt based on data, user preferences, business rules, or external conditions. Conditional steps are essential for personalization, A/B testing, feature flags, and any workflow that needs to behave differently based on context. The key is ensuring that conditional logic is deterministic - the same inputs should always produce the same flow path to maintain consistency across retries.
-
-```typescript
-export const userOnboarding = inngest.createFunction(
-  { id: "smart-onboarding" },
-  { event: "user/signup" },
-  async ({ event, step }) => {
-    const user = await step.run("fetch-user", () =>
-      getUser(event.data.userId)
-    );
-
-    // Different flows based on user type
-    if (user.plan === "enterprise") {
-      await step.run("enterprise-setup", () =>
-        setupEnterpriseFeatures(user.id)
-      );
-      
-      await step.run("assign-customer-success", () =>
-        assignCustomerSuccessManager(user.id)
-      );
-    } else if (user.plan === "pro") {
-      await step.run("pro-setup", () =>
-        setupProFeatures(user.id)
-      );
-    }
-
-    // Common steps for all users
-    await step.run("send-welcome-email", () =>
-      sendWelcomeEmail(user.email, user.plan)
-    );
-  }
-);
-```
-
-### Parallel Steps
-Run independent operations concurrently for better performance while maintaining durability guarantees. This pattern is crucial for workflows that involve multiple independent API calls, database operations, or processing tasks that don't depend on each other. Parallel execution can dramatically reduce total workflow time while still providing the reliability benefits of steps. Each parallel operation is tracked independently, so if one fails, only that operation retries while others continue with their cached results.
+### `step.sleep` - Scheduled Delays
+Pause a workflow for a specific duration, from seconds to days using [`step.sleep()`](https://www.inngest.com/docs/reference/functions/step-sleep). This is perfect for creating drip email campaigns, reminder systems, or any process that needs to wait for a period before continuing. The state of the workflow is preserved during the sleep. [See sleep use cases](https://www.inngest.com/docs/guides/scheduled-functions#sleeps-for-dynamic-schedules).
 
 ```typescript
-export const enrichUserProfile = inngest.createFunction(
-  { id: "enrich-profile" },
-  { event: "user/created" },
-  async ({ event, step }) => {
-    const userId = event.data.userId;
-
-    // Run these in parallel - they don't depend on each other
-    const [user, creditScore, socialData, preferences] = await Promise.all([
-      step.run("fetch-user", () =>
-        userService.getById(userId)
-      ),
-      step.run("get-credit-score", () =>
-        creditService.getScore(event.data.ssn)
-      ),
-      step.run("get-social-data", () =>
-        socialService.lookup(event.data.email)
-      ),
-      step.run("get-preferences", () =>
-        preferencesService.getDefaults(event.data.country)
-      )
-    ]);
-
-    // This runs after all parallel steps complete
-    await step.run("save-enriched-profile", () =>
-      profileService.save(userId, {
-        ...user,
-        creditScore: creditScore?.score,
-        socialData,
-        preferences
-      })
-    );
-  }
-);
-```
-
-### Loops with Steps
-Handle dynamic collections with unique step names for each iteration. This pattern is essential for processing arrays of data, batch operations, or any scenario where the number of steps isn't known at development time. The critical requirement is using unique step names for each iteration to ensure proper memoization and retry behavior. Each loop iteration creates its own checkpoint, so failed iterations can retry independently without affecting successful ones.
-
-```typescript
-export const processFileUploads = inngest.createFunction(
-  { id: "process-uploads" },
-  { event: "files/uploaded" },
-  async ({ event, step }) => {
-    const files = event.data.files;
-    const results = [];
-
-    // Process each file with its own step
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      
-      const result = await step.run(`process-file-${i}`, () =>
-        fileProcessor.process({
-          fileId: file.id,
-          fileName: file.name,
-          fileUrl: file.url
-        })
-      );
-      
-      results.push(result);
-      
-      // Optional: Add delay between files
-      if (i < files.length - 1) {
-        await step.sleep(`wait-after-file-${i}`, "500ms");
-      }
-    }
-
-    // Aggregate results
-    await step.run("save-batch-results", () =>
-      resultStore.saveBatch({
-        uploadId: event.data.uploadId,
-        results,
-        processedAt: new Date()
-      })
-    );
-  }
-);
-```
-
-import { Callout } from 'nextra/components'
-
-<Callout type="warning">
-**Important**: Use unique step names for each iteration. Steps with the same name return the same memoized result:
-
-```typescript
-// ❌ Wrong - all iterations return first result
-for (let item of items) {
-  await step.run("process", () => processItem(item));
-}
-
-// ✅ Correct - unique names for each iteration  
-for (let i = 0; i < items.length; i++) {
-  await step.run(`process-${i}`, () => processItem(items[i]));
+// Example: Follow up after 7 days if user hasn't activated
+await step.sleep("wait-for-activation-check", "7d");
+const user = await step.run("refetch-user", () => db.users.findById(event.data.userId));
+if (!user.activated) {
+  await step.run("send-reminder", () => email.sendActivationReminder(user));
 }
 ```
-</Callout>
+
+### `step.waitForEvent` - Wait for External Input
+Pause a workflow until a specific external event occurs using [`step.waitForEvent()`](https://www.inngest.com/docs/reference/functions/step-wait-for-event). This is ideal for approval steps, waiting for user actions, or integrating with asynchronous third-party systems. The function remains dormant until the target event is received, then resumes with the event's data. [See waitForEvent use cases](https://www.inngest.com/docs/guides/wait-for-event) and [event matching options](https://www.inngest.com/docs/reference/functions/step-wait-for-event#arguments).
+
+```typescript
+// Example: Expense report approval
+await step.run("submit-for-approval", () => expenseApi.submit(reportData));
+const approvalEvent = await step.waitForEvent("wait-for-approval", {
+  event: "expense/approved_or_denied",
+  timeout: "5d", // Wait up to 5 days
+  if: `event.data.reportId == "${reportData.id}"` // Match specific report
+});
+
+if (approvalEvent?.data.status === "approved") {
+  await step.run("process-reimbursement", () => paymentApi.reimburse(reportData));
+}
+```
+
+### `step.invoke` - Composable Workflows
+Break down large workflows into smaller, reusable Inngest functions using [`step.invoke()`](https://www.inngest.com/docs/reference/functions/step-invoke). This calls another Inngest function and waits for its result, similar to a synchronous function call but with full durability and observability for the invoked function. This promotes modularity and testability. [See function composition guide](https://www.inngest.com/docs/guides/invoking-functions-directly).
+
+```typescript
+// Parent workflow
+const paymentResult = await step.invoke("process-payment-subflow", {
+  function: processPaymentFunction, // Another Inngest function
+  data: { amount: order.total, userId: order.userId }
+});
+
+if (paymentResult.status === "failed") {
+  // Handle payment failure
+}
+```
+
+### `step.parallel` - Concurrent Operations
+Execute multiple asynchronous operations at the same time using [`step.parallel()`](https://www.inngest.com/docs/reference/functions/step-parallel) and wait for all of them to complete before proceeding. This is useful for fetching data from multiple sources, processing items in a collection independently, or any task where operations can run in parallel to speed up execution. Each parallel operation is still a durable step. [See parallel execution guide](https://www.inngest.com/docs/guides/parallel-steps).
+
+```typescript
+// Example: Enrich user data from multiple APIs
+const [profile, activity, settings] = await step.parallel([
+  () => step.run("fetch-profile", () => userApi.getProfile(userId)),
+  () => step.run("fetch-activity", () => activityApi.getActivity(userId)),
+  () => step.run("fetch-settings", () => settingsApi.getSettings(userId))
+]);
+
+const enrichedUser = { ...profile, ...activity, ...settings };
+```
 
 ## Error Handling in Steps
 
-Proper error handling in steps is crucial for building resilient workflows that can gracefully handle both expected and unexpected failures. Steps provide multiple layers of error handling, from automatic retries for transient issues to custom logic for business-specific error conditions. Understanding how to leverage these capabilities helps you build workflows that are both robust and maintainable, with clear failure modes and recovery strategies.
-
-### Automatic Retries
-Steps automatically retry with exponential backoff for common failure scenarios. Inngest automatically identifies transient errors like network timeouts, connection failures, and temporary service outages, retrying them with increasing delays to avoid overwhelming failing services. This built-in retry logic handles the vast majority of failure cases without requiring any additional code. The exponential backoff algorithm starts with short delays and gradually increases them, giving temporary issues time to resolve while avoiding resource waste.
-
-```typescript
-await step.run("api-call", async () => {
-  // This will retry automatically on:
-  // - Network timeouts
-  // - 5xx server errors  
-  // - Connection failures
-  return await externalAPI.getData();
-});
-```
-
-### Custom Error Handling
-Control which errors should retry versus fail immediately based on your business logic. Not all errors should trigger retries - some errors indicate permanent failures or invalid inputs that won't succeed on subsequent attempts. Custom error handling allows you to distinguish between retriable and non-retriable errors, implement circuit breaker patterns, and provide meaningful error messages. This level of control is essential for integrating with external APIs that have specific error handling requirements or business logic constraints.
-
-```typescript
-await step.run("smart-api-call", async () => {
-  try {
-    return await externalAPI.getData();
-  } catch (error) {
-    if (error.status === 429) {
-      // Rate limited - let Inngest retry with backoff
-      throw error;
-    } else if (error.status === 400) {
-      // Bad request - don't retry, it won't succeed
-      throw new NonRetriableError(`Invalid request: ${error.message}`);
-    } else if (error.status >= 500) {
-      // Server error - retry
-      throw error;
-    }
-    
-    // Unknown error - don't retry to be safe
-    throw new NonRetriableError(`Unexpected error: ${error.message}`);
-  }
-});
-```
-
-### Graceful Degradation
-Handle failures at the function level to create resilient workflows that continue operating even when non-critical components fail. This pattern allows you to distinguish between critical operations that must succeed and optional operations that can fail without breaking the entire workflow. Graceful degradation is essential for building user-facing systems where partial functionality is better than complete failure, and for integrating with unreliable external services where failures should be isolated and contained.
-
-```typescript
-export const notificationWorkflow = inngest.createFunction(
-  { id: "send-notifications" },
-  { event: "user/action" },
-  async ({ event, step }) => {
-    // Critical notification - must succeed
-    await step.run("send-email", () =>
-      emailService.send(event.data.userEmail, "important-update")
-    );
-    
-    // Optional notification - continue if it fails
-    try {
-      await step.run("send-push", () =>
-        pushService.send(event.data.userId, "update-available")
-      );
-    } catch (error) {
-      // Log but don't fail the function
-      console.warn("Push notification failed:", error);
-    }
-    
-    // Analytics - fire and forget
-    await step.run("track-event", () =>
-      analytics.track("notification_sent", event.data.userId)
-    ).catch(() => {
-      // Silently ignore analytics failures
-    });
-  }
-);
-```
+Steps have built-in [automatic retries with exponential backoff](https://www.inngest.com/docs/features/inngest-functions/error-retries/retries). You can also implement custom error handling within your step functions using standard `try/catch` blocks for business logic errors, or use Inngest's [`onFailure` handler](https://www.inngest.com/docs/reference/functions/handling-failures) for function-level error management. For detailed strategies, see our [Error Handling guide](/quick-start/patterns#error-handling-in-steps) and the [official Error Handling docs](https://www.inngest.com/docs/guides/error-handling).
 
 ## Step Best Practices
 
-### 1. Use Descriptive Names
-Step names appear in logs, debugging, and the Inngest dashboard making them crucial for troubleshooting and monitoring. Clear, descriptive names help you quickly identify what each step does and where issues occur in your workflows. Good step names should describe the action being performed and any relevant context, making it easy for other developers (or future you) to understand the workflow logic. Avoid generic names that don't provide meaningful information about the step's purpose or scope.
-
-```typescript
-// ✅ Good - Clear purpose
-await step.run("validate-payment-method", () => ...);
-await step.run("charge-customer-card", () => ...);
-await step.run("send-receipt-email", () => ...);
-
-// ❌ Bad - Generic names
-await step.run("step1", () => ...);
-await step.run("process", () => ...);
-await step.run("finish", () => ...);
-```
-
-### 2. Keep Steps Atomic
-Each step should do one logical operation that can be safely retried without side effects. Atomic steps make workflows easier to understand, debug, and maintain while providing better error isolation and recovery. When steps are atomic, failures have clear boundaries and you can identify exactly what went wrong and what needs to be retried. This also makes it easier to monitor performance and identify bottlenecks in your workflows. Breaking complex operations into smaller, focused steps provides better observability and makes your workflows more resilient to partial failures.
-
-```typescript
-// ✅ Good - Atomic operations
-await step.run("create-user", () => db.users.create(userData));
-await step.run("send-welcome-email", () => emailService.send(...));
-await step.run("track-signup", () => analytics.track(...));
-
-// ❌ Bad - Multiple operations in one step
-await step.run("create-user-and-send-email", () => {
-  const user = db.users.create(userData);
-  emailService.send(user.email, "welcome");
-  analytics.track("signup", user.id);
-  return user;
-});
-```
-
-### 3. Design for Idempotency
-Make steps safe to run multiple times:
-
-```typescript
-// ✅ Good - Idempotent operations
-await step.run("create-stripe-customer", () =>
-  stripe.customers.create({
-    email: user.email,
-    metadata: { userId: user.id }
-  }, {
-    idempotencyKey: `customer-${user.id}` // Stripe handles duplicates
-  })
-);
-
-await step.run("upsert-user-profile", () =>
-  db.profiles.upsert({
-    where: { userId: user.id },
-    create: { userId: user.id, ...profileData },
-    update: profileData // Safe to run multiple times
-  })
-);
-```
-
-### 4. Include Context for Debugging
-Pass relevant data to help with troubleshooting:
-
-```typescript
-export const processPayment = inngest.createFunction(
-  { id: "process-payment" },
-  { event: "payment/requested" },
-  async ({ event, step, logger }) => {
-    const { orderId, amount, customerId } = event.data;
-    
-    logger.info("Processing payment", { orderId, amount, customerId });
-
-    const paymentMethod = await step.run("fetch-payment-method", async () => {
-      const method = await stripe.paymentMethods.retrieve(event.data.paymentMethodId);
-      logger.info("Retrieved payment method", { 
-        orderId, 
-        last4: method.card?.last4,
-        brand: method.card?.brand 
-      });
-      return method;
-    });
-    
-    // More steps with contextual logging...
-  }
-);
-```
-
-## Testing Steps
-
-### Unit Testing with Mocks
-Test step logic in isolation:
-
-```typescript
-import { createStepTools } from "inngest/test";
-
-describe("processOrder", () => {
-  it("should process order successfully", async () => {
-    const { step } = createStepTools();
-    const mockEvent = {
-      data: { orderId: "ord_123", total: 99.99 }
-    };
-
-    // Mock step results
-    step.run.mockResolvedValueOnce({ id: "pay_123" }); // payment
-    step.run.mockResolvedValueOnce({ id: "ship_456" }); // shipment
-
-    const result = await processOrder.handler({
-      event: mockEvent,
-      step,
-      logger: console
-    });
-
-    expect(result.paymentId).toBe("pay_123");
-    expect(result.shipmentId).toBe("ship_456");
-    expect(step.run).toHaveBeenCalledTimes(2);
-  });
-});
-```
-
-### Integration Testing
-Test complete workflows with the Inngest test framework:
-
-```typescript
-import { InngestTestEngine } from "inngest/test";
-
-describe("Order Processing", () => {
-  let t: InngestTestEngine;
-
-  beforeEach(() => {
-    t = new InngestTestEngine({
-      functions: [processOrder, sendConfirmation]
-    });
-  });
-
-  it("should complete order workflow", async () => {
-    await t.send({
-      name: "order/created",
-      data: { orderId: "ord_123", total: 99.99 }
-    });
-
-    const runs = await t.waitForRuns("process-order");
-    expect(runs).toHaveLength(1);
-    expect(runs[0].status).toBe("completed");
-  });
-});
-```
-
-**Learn more**: [Testing strategies in Patterns](/quick-start/patterns#testing-functions)
-
-## Performance Considerations
-
-<Callout type="info">
-**Network Overhead**: Each step creates a network round-trip to Inngest. While optimized for this model, avoid creating unnecessarily granular steps for simple operations.
-
-```typescript
-// ✅ Good balance
-await step.run("process-order", () => {
-  // Multiple related operations together
-  const validation = validateOrder(order);
-  const pricing = calculatePricing(order);
-  const tax = calculateTax(order, pricing);
-  return { validation, pricing, tax };
-});
-
-// ❌ Too granular  
-await step.run("validate", () => validateOrder(order));
-await step.run("price", () => calculatePricing(order));
-await step.run("tax", () => calculateTax(order, pricing));
-```
-</Callout>
+1.  **Use descriptive step names**: Good names (e.g., `"charge-stripe-customer"`) improve [observability](https://www.inngest.com/docs/platform/monitor) in the Inngest dashboard. They should be unique within a function. [More on Naming Steps](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#naming-steps).
+2.  **Keep steps atomic**: Each `step.run()` should ideally perform one logical unit of work. This makes retries safer and workflows easier to understand.
+3.  **Pass data explicitly**: Steps are memoized based on their name and inputs. If a step needs data from a previous step, pass it explicitly. Relying on shared mutable state outside of step inputs/outputs can lead to unexpected behavior during retries. See [data passing recommendations](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#passing-data-between-steps).
 
 ## Next Steps
 
-Now that you understand how steps make functions durable, learn how to optimize their execution:
-
-**[→ Flow Control: Managing Execution](/concepts/flow-control)**
-
-Flow Control manages how your step-based [Functions](/concepts/functions) execute at scale - from concurrency limits to event batching.
-
-**Also explore:**
-- [Functions: Building Workflows](/concepts/functions) - The containers for your steps
-- [Real-World Examples](/quick-start/examples) - See steps in complete workflows  
-- [Official Steps Documentation](https://www.inngest.com/docs/features/inngest-functions/steps-workflows) - Complete technical reference 
+- Understand **[Functions](/concepts/functions)**, which host your steps.
+- Explore **[Flow Control](/concepts/flow-control)** for managing how step functions execute at scale.
+- See **[Real-World Examples](/quick-start/examples)** of how steps are used in complex workflows.
+- Dive into the **[Official Steps & Workflows Documentation](https://www.inngest.com/docs/features/inngest-functions/steps-workflows)**.
