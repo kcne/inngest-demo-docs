@@ -1,3 +1,5 @@
+import { Callout } from 'nextra/components'
+
 # Patterns & Anti-Patterns
 
 Learn proven patterns for building reliable Inngest functions and avoid common pitfalls that can lead to brittle, hard-to-debug workflows. These patterns are based on [durable execution](https://www.inngest.com/blog/principles-of-durable-execution) principles and production experience with [event-driven architectures](https://en.wikipedia.org/wiki/Event-driven_architecture).
@@ -13,12 +15,18 @@ Learn proven patterns for building reliable Inngest functions and avoid common p
 await step.run("validate-order-items", () => validateOrderItems(items));
 await step.run("calculate-shipping-cost", () => calculateShipping(address));
 
-// ❌ Bad - Generic, uninformative names  
+// ❌ Bad - Generic, uninformative names
 await step.run("step1", () => validateOrderItems(items));
 ```
 
 ### Keep Steps Atomic
 Each [`step.run()`](/concepts/steps#steprun---execute--retry) should perform one logical unit of work that can be safely retried. This improves error isolation and makes workflows easier to debug. See more in [Steps Best Practices](/concepts/steps#step-best-practices).
+
+**Key Benefits of Atomic Steps:**
+*   **Improved Error Isolation**: Failures are pinpointed to a specific, small unit of work.
+*   **Easier Debugging**: Simpler to understand the state and context of a failed step.
+*   **Safer Retries**: Retrying a small, well-defined operation is less likely to cause unintended side effects.
+*   **Clearer Workflow Logic**: Functions become easier to read and maintain when composed of distinct, logical steps.
 
 ```typescript
 // ✅ Good - Atomic operations
@@ -33,16 +41,16 @@ await step.run("create-user-and-send-email", async () => {
 ```
 
 ### Idempotent Step Design
-Ensure your step logic can be safely executed multiple times without unintended side effects, especially when interacting with external systems. Use techniques like idempotency keys if the external API supports them. [Learn about Idempotency](https://en.wikipedia.org/wiki/Idempotence#Computer_science).
+Ensure your step logic can be safely executed multiple times without unintended side effects, especially when interacting with external systems. If a step is retried due to a failure later in the function, or even if the step itself fails and retries, the outcome should be consistent as if it ran only once. Use techniques like idempotency keys if the external API supports them. [Learn about Idempotency](https://en.wikipedia.org/wiki/Idempotence#Computer_science).
 
 ```typescript
 // ✅ Good - Using idempotency key for Stripe
-await step.run("charge-customer-card", () => 
+await step.run("charge-customer-card", () =>
   stripe.charges.create({
     amount: order.total,
     currency: "usd",
     customer: order.customerId
-  }, { 
+  }, {
     idempotencyKey: `charge-${order.id}` // Stripe handles retries safely
   })
 );
@@ -69,6 +77,15 @@ One event triggers multiple independent functions. This is a common pattern for 
 ### Event Versioning (Conceptual)
 While Inngest functions have [versioning](https://www.inngest.com/docs/features/inngest-functions/versioning), consider how you'll handle changes to event schemas over time. Strategies include tolerant readers, version numbers in event names (`user/signed_up/v2`), or transformation functions.
 
+<Callout type="info" emoji="🤔">
+  **Important Consideration: Event Schema Evolution**
+  Inngest's function versioning helps manage changes to your function's *code* and *step structure*. However, evolving the *schema* of your events (`event.data`) is a separate challenge common to all event-driven architectures.
+  Consider strategies like:
+  - **Tolerant Reader Pattern**: Design your functions to ignore new fields they don't understand and provide sensible defaults for missing fields (especially in older event versions).
+  - **Explicit Event Versioning**: Include a version in your event names (e.g., `user/signed_up.v2`) or in the event payload (e.g., `data: { version: 2, ... }`). Your function can then adapt its logic based on this version.
+  - **Upcasting/Transformation**: In some scenarios, you might have a dedicated function or step that transforms older event versions into the current schema before processing.
+</Callout>
+
 ## Error Handling in Steps
 
 Effective error handling is crucial for robust workflows.
@@ -79,6 +96,14 @@ Inngest automatically retries failed steps with [exponential backoff](https://en
 ### Custom `try/catch` for Business Logic Errors
 Wrap step operations in `try/catch` blocks to handle specific business logic errors (e.g., payment declined due to insufficient funds vs. API error). This allows you to implement custom recovery logic or send specific notifications.
 
+**When to use `try/catch` vs. relying on default retries:**
+*   **Default Retries are for Transient Issues**: Inngest's automatic step retries (with exponential backoff) are excellent for temporary problems like network blips, brief API unavailability, or rate limit throttling. You often don't need custom `try/catch` for these.
+*   **`try/catch` is for Business Logic Decisions**: Use `try/catch` when an error represents a specific business outcome that requires a different workflow path, rather than just retrying the same operation. Examples:
+    *   A payment card is declined (requires notifying the user, not just retrying the charge indefinitely).
+    *   Validation logic fails for an input (requires stopping the process or sending an error event).
+    *   An external service returns a definitive non-retryable error (e.g., "account suspended").
+*   **Control Flow**: `try/catch` allows you to gracefully handle an error, potentially log it, send a specific event (e.g., `user/payment_declined`), and then either continue with a different path in your workflow or throw a `NonRetriableError` to stop further retries of that step if appropriate.
+
 ```typescript
 await step.run("process-payment", async () => {
   try {
@@ -86,11 +111,11 @@ await step.run("process-payment", async () => {
   } catch (error) {
     if (error.code === "card_declined") {
       await step.sendEvent("notify-user-card-declined", { // Triggers another function
-        name: "user/payment_declined", 
+        name: "user/payment_declined",
         data: { userId: order.userId, reason: error.message }
       });
       // Optionally, re-throw a NonRetriableError to stop retries for this step
-      throw new NonRetriableError("Card was declined."); // See: https://www.inngest.com/docs/reference/typescript/inngest#nonretriableerror
+      throw new NonRetriableError("Card was declined.");
     }
     throw error; // Re-throw other errors for Inngest to retry
   }
@@ -118,12 +143,29 @@ Use [`InngestTestEngine`](https://www.inngest.com/docs/reference/testing#inngest
 
 *See more: [Testing Functions in Functions Concept](/concepts/functions#testing-functions).*
 
+<Callout type="info" emoji="🛡️">
+  **Foundational Principle: Aim for Reliability by Design**
+  The most robust Inngest workflows are built on the principles of determinism, idempotency, and clear separation of concerns. Strive to make your functions and steps:
+  - **Deterministic**: Given the same inputs, they should always attempt the same operations and produce the same results or errors.
+  - **Idempotent**: Steps, especially those interacting with external systems, should be safe to retry without causing duplicate operations.
+  - **Self-Contained & Well-Scoped**: Each function should have a clear responsibility, and each step should represent a distinct, logical unit of work.
+</Callout>
+
 ## Anti-Patterns to Avoid
 
-- **Non-Deterministic Logic in Steps**: Ensure that given the same input, a step's logic (especially conditional paths) behaves identically. Inngest relies on determinism for reliable retries. [Read about Determinism](https://en.wikipedia.org/wiki/Deterministic_algorithm).
-- **Overly Large Event Payloads**: Keep event payloads concise. Fetch large data within steps if needed. [See Event Payload Best Practices](/concepts/events#event-payload-best-practices).
-- **Ignoring Flow Control**: Not setting up [concurrency](/concepts/flow-control#concurrency-control) or [rate limits](/concepts/flow-control#rate-limiting) can overwhelm downstream services.
-- **Shared Mutable State Across Steps**: Each step should be self-contained or explicitly pass data. State outside of step inputs/outputs is not reliably preserved across retries or distributed executions. [See Passing Data in Steps](/concepts/steps#step-best-practices).
+- **Non-Deterministic Logic in Steps**:
+    - **Impact**: Can lead to unpredictable behavior during retries, as Inngest relies on deterministic execution for reliable recovery. A step might take a different path or behave differently on a retry than it did on the initial attempt if its logic depends on non-memoized, volatile data (like `Math.random()` or `Date.now()` directly influencing control flow within the step code itself rather than just being data processed by the step).
+    - **Solution**: Ensure that the logic path within a step function is consistent. If random values or current timestamps are needed *for the operation within a step*, generate them inside the step's callback so they are part of the memoized execution. For data that *drives* conditional logic leading to different step calls, ensure this data is stable (e.g., passed from a previous step or the event payload).
+    [Read about Determinism](https://en.wikipedia.org/wiki/Deterministic_algorithm).
+- **Overly Large Event Payloads**:
+    - **Impact**: Can hit Inngest platform limits (e.g., 256KB), increase network latency, and make debugging harder due to noise.
+    - **Solution**: Keep event payloads concise. Include essential identifiers and data. For large data objects (files, detailed records), pass references (e.g., an S3 URL, a database ID) in the event, and fetch the full data within a step in the function. [See Event Payload Best Practices](/concepts/events#event-payload-best-practices).
+- **Ignoring Flow Control**:
+    - **Impact**: Can overwhelm your own downstream services (databases, internal APIs) or hit rate limits from third-party APIs, leading to failures, increased costs, or even getting your API keys blocked.
+    - **Solution**: Proactively configure [concurrency limits](/concepts/flow-control#concurrency-control), [rate limits](/concepts/flow-control#rate-limiting), and [event batching](/concepts/flow-control#event-batching) on your functions based on the capacity of the services they interact with. Start conservatively and monitor.
+- **Shared Mutable State Across Steps**:
+    - **Impact**: State defined outside of step inputs/outputs (e.g., variables in the function scope modified by one step and expected to be read by another) is not reliably preserved across retries or distributed executions. This can lead to inconsistent behavior and bugs that are hard to trace, as a retried step might not see the mutations from a previous attempt of another step.
+    - **Solution**: Each step should be self-contained or receive all necessary data explicitly as input (either from the event payload or the output of a *previous, successfully completed* step). Avoid modifying variables in the broader function scope from within a step and relying on that mutated state in a subsequent step. Pass data explicitly. [See Passing Data in Steps](/concepts/steps#step-best-practices).
 
 ## Next Steps
 

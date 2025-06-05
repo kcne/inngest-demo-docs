@@ -56,7 +56,14 @@ curl -X POST http://localhost:3000/api/inngest \
 # View execution in dashboard: http://localhost:8288
 ```
 
-**Learn more**: [Official Quick Start Guides](https://www.inngest.com/docs/getting-started) for your framework
+import { Callout } from 'nextra/components'
+
+<Callout type="info" emoji="🖥️">
+  **Local Dev Tip: Use the Inngest Dev Server**
+  The Inngest Dev Server (`npx inngest-cli dev`) is your best friend during local development. It provides a visual dashboard (usually at `http://localhost:8288`) where you can see incoming events, inspect their payloads, observe function executions step-by-step, and view logs. This makes debugging and understanding your workflows much easier!
+</Callout>
+
+**Learn more**: [Official Quick Start Guides](https://www.inngest.com/docs) for your framework
 
 ### Progressive Learning Path
 
@@ -66,6 +73,8 @@ Start with simple patterns and gradually introduce more sophisticated features. 
 
 Replace slow, blocking operations with fast, async event-driven processing. This fundamental pattern improves user experience by keeping API responses fast while ensuring work gets done reliably in the background.
 
+**Key Benefit:** Immediately improves API responsiveness and user experience by offloading time-consuming tasks.
+
 ```typescript
 // When user signs up → send welcome email asynchronously
 { event: "user/signup" } → sendWelcomeEmail()
@@ -74,6 +83,8 @@ Replace slow, blocking operations with fast, async event-driven processing. This
 **2. Multi-Step Workflow** - Add durability with [Steps](/concepts/steps)
 
 Break complex operations into resumable pieces that survive failures. Each step creates a checkpoint, so if something goes wrong, only the failed step retries while successful work is preserved.
+
+**Key Benefit:** Makes your background processes resilient to failures, preventing data loss or incomplete operations by ensuring workflows can resume.
 
 ```typescript
 await step.run("create-user", () => db.users.create(data));
@@ -85,6 +96,8 @@ await step.run("track-signup", () => analytics.track(...));
 
 Introduce delays, schedules, and timeouts to your workflows. This enables complex user journeys, follow-up sequences, and time-sensitive business logic that spans hours, days, or weeks.
 
+**Key Benefit:** Enables long-running, stateful workflows that can react to timelines, such as drip campaigns, trial expirations, or scheduled follow-ups.
+
 ```typescript
 await step.sleep("wait-24-hours", "24h");
 await step.run("send-follow-up", () => sendFollowUp(...));
@@ -93,6 +106,8 @@ await step.run("send-follow-up", () => sendFollowUp(...));
 **4. Production Scale** - Add [Flow Control](/concepts/flow-control)
 
 Protect your infrastructure and external services with concurrency limits, rate limiting, and batching. These controls ensure your functions scale gracefully without overwhelming downstream systems.
+
+**Key Benefit:** Ensures your application remains stable, cost-effective, and well-behaved at scale by preventing overload on your system and third-party services.
 
 ```typescript
 {
@@ -109,6 +124,12 @@ Understanding when and why to use Inngest helps you identify opportunities in yo
 
 **When to use**: Heavy operations that don't need immediate user feedback and would slow down API responses if executed synchronously.
 
+**Key Advantages with Inngest:**
+*   **Improved User Experience**: APIs respond instantly by offloading work.
+*   **Simplified Infrastructure**: No need to manage separate queue systems or worker fleets.
+*   **Built-in Reliability**: Automatic retries and state persistence for background tasks.
+*   **Easy Deployment**: Functions deploy with your application code.
+
 Background processing is often the first Inngest pattern developers adopt because it provides immediate user experience improvements. Instead of making users wait for slow operations like image processing or email sending, you can respond instantly and handle the work asynchronously.
 
 **Common Examples:**
@@ -117,13 +138,17 @@ Background processing is often the first Inngest pattern developers adopt becaus
 - **Third-party API synchronization**: Push data to external services like CRMs
 - **Analytics event processing**: Track user behavior without slowing requests
 
-**Why Inngest is better**: Traditional background job systems require complex queue management and worker processes. Inngest functions deploy with your app and automatically handle retry logic, state persistence, and scaling.
-
-**Start with**: [User onboarding example](/quick-start/examples#user-onboarding-sequence)
+**Start with**: [User onboarding example](/quick-start/examples#user-onboarding-sequence) or [Background Jobs Guide](https://www.inngest.com/docs/guides/background-jobs)
 
 ### Workflow Orchestration
 
-**When to use**: Multi-step processes with dependencies, error handling requirements, and business logic that spans multiple systems or time periods.
+**When to use**: Multi-step processes with dependencies, complex error handling requirements, and business logic that spans multiple systems or time periods.
+
+**Key Advantages with Inngest:**
+*   **Durable State Management**: Workflows can pause, wait for external events (`step.waitForEvent()`), sleep (`step.sleep()`), and resume exactly where they left off, even across deployments or failures.
+*   **Complex Logic Made Simple**: Write straightforward code for sophisticated sequences, error handling, and compensation logic without manual state machines.
+*   **Observability**: Visual timelines in the Dev Server and Inngest Cloud make it easy to understand and debug workflow state.
+*   **Modularity**: Break down large processes into smaller, manageable, and testable Inngest functions using `step.invoke()`.
 
 Workflow orchestration becomes essential as your application grows beyond simple CRUD operations. Order processing, content moderation, and user onboarding all require coordinating multiple services while handling failures gracefully.
 
@@ -133,13 +158,17 @@ Workflow orchestration becomes essential as your application grows beyond simple
 - **Employee onboarding**: Account creation → training assignment → access provisioning
 - **Data pipeline**: Ingestion → transformation → validation → storage
 
-**Why Inngest excels**: Built-in durability means workflows can pause, wait for external events, and resume exactly where they left off. This eliminates the complexity of managing workflow state manually.
-
-**Start with**: [Order processing example](/quick-start/examples#e-commerce-order-processing)
+**Start with**: [Order processing example](/quick-start/examples#e-commerce-order-processing) or [Multi-Step Functions Guide](https://www.inngest.com/docs/guides/multi-step-functions)
 
 ### Scheduled Tasks
 
-**When to use**: Recurring operations, maintenance tasks, or time-based triggers that need to run reliably without manual intervention.
+**When to use**: Recurring operations, maintenance tasks, or time-based triggers that need to run reliably without manual intervention, replacing traditional cron jobs.
+
+**Key Advantages with Inngest:**
+*   **Enhanced Reliability**: Built-in retries, error handling, and `onFailure` hooks, superior to standard cron.
+*   **Observability**: Scheduled function executions are logged and visible in the Inngest dashboard.
+*   **Integrated with Application Logic**: Can easily call other application services or Inngest functions as part of the scheduled task.
+*   **Flexible Scheduling**: Supports standard cron expressions.
 
 Scheduled tasks replace traditional cron jobs with more robust, observable, and maintainable solutions. Unlike cron, Inngest scheduled functions have built-in retry logic, logging, and can integrate with your existing application logic.
 
@@ -149,13 +178,17 @@ Scheduled tasks replace traditional cron jobs with more robust, observable, and 
 - **Data cleanup and archival**: Remove expired records or move old data
 - **Health checks and monitoring**: Verify system status and alert on issues
 
-**Why choose Inngest**: Scheduled functions run in the same reliable infrastructure as your event-driven functions, with automatic retry, error handling, and observability built in.
-
-**Start with**: [Cron patterns in Functions](/concepts/functions#scheduled-functions)
+**Start with**: [Cron patterns in Functions](/concepts/functions#scheduled-functions) or [Scheduled Functions Guide](https://www.inngest.com/docs/guides/scheduled-functions)
 
 ### Event-Driven Integration
 
-**When to use**: Reacting to external systems, user actions, or system changes that require immediate response or coordination between multiple services.
+**When to use**: Reacting to external systems (e.g., webhooks from Stripe, GitHub), user actions, or internal system changes that require immediate response or coordination between multiple services.
+
+**Key Advantages with Inngest:**
+*   **Decoupled Systems**: Services communicate via events, making them more maintainable and allowing new functionality to be added without changing existing event producers.
+*   **Real-time Responsiveness**: Functions trigger immediately in response to events.
+*   **Simplified Webhook Handling**: Easily create reliable handlers for incoming webhooks from third-party services, with Inngest managing retries and state.
+*   **Audit Trails**: Events naturally create an audit trail of significant actions in your system.
 
 Event-driven integration becomes crucial for building responsive, decoupled systems that can react to changes in real time. This pattern enables you to build systems that respond intelligently to user behavior and external system changes.
 
@@ -165,9 +198,7 @@ Event-driven integration becomes crucial for building responsive, decoupled syst
 - **Real-time notifications**: Send alerts based on user activity or system events
 - **Audit trail generation**: Log important actions for compliance or debugging
 
-**Why Inngest simplifies integration**: Events decouple your systems, making them more maintainable and allowing you to add new functionality without changing existing code.
-
-**Start with**: [Event patterns documentation](/concepts/events#event-patterns)
+**Start with**: [Event patterns documentation](/concepts/events#event-patterns) or [Webhook Handling Guide](https://www.inngest.com/docs/guides/handling-webhooks) (if a general guide exists)
 
 ## Production Considerations
 
@@ -184,14 +215,21 @@ Security should be built into your Inngest functions from the beginning. Proper 
 - **Use environment variables**: Store secrets securely and access them in your functions
 - **Validate input data**: Always validate event payloads and external API responses
 
+<Callout type="error" emoji="🔒">
+  **Critical Security Reminder: Manage Secrets Securely**
+  NEVER hardcode secrets (API keys, database passwords, etc.) directly in your function code or commit them to version control. Always use environment variables to store sensitive information and access them within your functions (e.g., `process.env.API_KEY`). Utilize your deployment platform's secret management capabilities.
+</Callout>
+
 **Monitoring and Observability**
 
 Comprehensive monitoring helps you identify issues before they impact users and provides the data needed for optimization and scaling decisions.
 
+<Callout type="info" emoji="📝">
+  **Logging Best Practice: Use Structured Logs**
+  When logging within your Inngest functions (e.g., using the provided `logger` object or your own logging library), prefer structured logging (e.g., JSON format). Include relevant context like `eventId`, `runId`, `stepName`, and key business identifiers (`orderId`, `userId`). This makes your logs much easier to search, filter, and analyze in your observability platform, significantly speeding up debugging.
+</Callout>
+
 - **Configure [Flow Control](/concepts/flow-control)**: Set appropriate limits to protect external services and manage costs
-- **Set up alerting**: Get notified when functions fail repeatedly or performance degrades
-- **Monitor execution metrics**: Track function duration, success rates, and resource usage
-- **Log structured data**: Include relevant context in logs for easier debugging
 
 **Testing Strategy**
 
@@ -239,29 +277,18 @@ curl -X PUT https://your-app.com/api/inngest
 
 Common issues and their solutions to get you unstuck quickly. These solutions address the most frequent problems developers encounter when building with Inngest.
 
-### Function Not Triggering
+| Symptom                                                        | Common Causes & Solutions                                                                                                                                                                                             |
+| :------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Function Not Triggering**                                    | - **Event Name Mismatch**: Double-check `event` name spelling and structure in both the event sender and the function trigger. <br/> - **Function Not Registered**: Verify the function is correctly included in your `serve()` handler configuration and that the Inngest API route is deployed. <br/> - **Sync Issues**: Ensure your app has been successfully synced with Inngest Cloud after deployment (e.g., `curl -X PUT https://YOUR_APP_URL/api/inngest`). Check the Inngest dashboard for registration status. |
+| **Steps Not Working Properly / Function Restarts from Start**  | - **Missing `step.run()` Wrappers**: Ensure all asynchronous operations, external API calls, or any code that might fail and needs to be retried are wrapped in a `step.run(\"unique-step-name\", async () => { ... })`. <br/> - **Non-Deterministic Code**: Logic that produces different outputs given the same input (e.g., using `Math.random()` or `new Date()` directly to determine step behavior) should be handled carefully. If such values are needed by steps, generate them *within* a step to ensure they are memoized. <br/> - **Duplicate Step Names**: All step names within a single function execution must be unique. If you have loops or conditional logic generating steps, ensure unique names (e.g., `step.run('process-item-[ITEM_ID]', ...)`). |
+| **Performance Issues (Slow Execution, High Costs)**            | - **Missing Flow Control**: Review [Flow Control settings](/concepts/flow-control) (concurrency, rate limits, batching) to ensure they are appropriate for your function\'s interaction with downstream services. <br/> - **Inefficient Step Logic**: Analyze if too many small, granular steps are adding unnecessary overhead. Sometimes, grouping a few related, quick operations into a single step can be more efficient. <br/> - **Sequential Execution Bottlenecks**: If your function has multiple independent operations, consider using `step.parallel()` to run them concurrently. |
 
-**Symptoms**: Events are sent but functions don't execute
-**Common Causes & Solutions**:
-- **Event name mismatch**: Check [event](/concepts/events) name spelling and structure in both sender and function
-- **Function not registered**: Verify function is included in your serve handler configuration  
-- **Sync issues**: Confirm your app is properly synced with Inngest Cloud after deployment
-
-### Steps Not Working Properly
-
-**Symptoms**: Functions restart from the beginning or don't preserve progress
-**Common Causes & Solutions**:
-- **Missing step wrappers**: Ensure all async operations are wrapped in [steps](/concepts/steps)
-- **Non-deterministic code**: Move random values, timestamps, or external calls inside steps
-- **Duplicate step names**: Verify unique step names, especially in loops or conditional logic
-
-### Performance Issues
-
-**Symptoms**: Slow execution, high costs, or resource contention
-**Common Causes & Solutions**:
-- **Missing flow control**: Review [Flow Control](/concepts/flow-control) settings for concurrency and rate limits
-- **Sequential execution**: Consider parallel step execution for independent operations
-- **Over-granular steps**: Check for unnecessary step granularity that adds overhead
+<Callout type="info" emoji="🛠️">
+  **General Debugging Tip: Leverage the Dev Server & Logs**
+  - **Inngest Dev Server**: When developing locally (`npx inngest-cli dev`), the Dev Server dashboard (`http://localhost:8288`) is your first stop. It shows event streams, function run timelines (including step inputs/outputs), and logs.
+  - **Verbose Logging**: Temporarily add more detailed logging within your function and steps during development to trace execution flow and variable states.
+  - **Check `onFailure`**: If functions are failing completely, ensure you have an `onFailure` handler to catch and log terminal errors for better diagnosis.
+</Callout>
 
 **Need more help?** See detailed [troubleshooting patterns](/quick-start/patterns#error-handling-in-steps)
 

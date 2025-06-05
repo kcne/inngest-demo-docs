@@ -1,6 +1,6 @@
 # Events
 
-Events are the heartbeat of Inngest's [event-driven architecture](https://en.wikipedia.org/wiki/Event-driven_architecture). They represent immutable records of things that happen in your system - user signups, order completions, file uploads, or any significant state change. Think of events as **announcements**: "Hey, something important just happened!" Your [Functions](/concepts/functions) listen for these announcements and automatically spring into action. <br/> <br/>
+Events are the core building blocks of Inngest's [event-driven architecture](https://en.wikipedia.org/wiki/Event-driven_architecture). They represent immutable records of things that happen in your system - user signups, order completions, file uploads, or any significant state change. Think of events as **announcements**: "Hey, something important just happened!". Your [Functions](/concepts/functions) listen for these announcements and automatically spring into action. <br/> <br/>
 
 <img src="/events.png" alt="Events" />
 
@@ -11,7 +11,7 @@ Events solve a fundamental problem in application architecture: **tight coupling
 ### Without Events (Traditional Queue System)
 ```typescript
 // Complex setup: multiple queues, worker processes, manual error handling
-const Queue = require('bull'); // Example: BullMQ
+const Queue = require('bull');
 const emailQueue = new Queue('email', process.env.REDIS_URL);
 const analyticsQueue = new Queue('analytics', process.env.REDIS_URL);
 
@@ -19,7 +19,7 @@ app.post('/api/users', async (req, res) => {
   const user = await db.users.create(req.body);
   await emailQueue.add('welcome', { email: user.email });
   await analyticsQueue.add('track', { userId: user.id, event: 'user_created' });
-  res.json(user); // API response is quick, but setup is complex
+  res.json(user);
 });
 
 // Separate worker for emails
@@ -33,11 +33,11 @@ analyticsQueue.process('track', async (job) => analyticsService.track(job.data.e
 // API route: simple event sending
 app.post('/api/users', async (req, res) => {
   const user = await db.users.create(req.body);
-  await inngest.send({ // See: https://www.inngest.com/docs/events
+  await inngest.send({
     name: "user/created",
     data: { userId: user.id, email: user.email }
   });
-  res.json(user); // API response is fast
+  res.json(user);
 });
 
 // Functions automatically handle events with built-in reliability
@@ -51,6 +51,16 @@ export const trackUser = inngest.createFunction(
 );
 ```
 **The result**: Your API is fast, background work is reliable via [Inngest Functions](/concepts/functions), and adding new workflows (e.g., a new function listening to `user/created`) doesn't require changing existing API code.
+
+import { Callout } from 'nextra/components'
+
+<Callout type="info" emoji="✅">
+  **Key Takeaways: Why Events Unlock Better Systems**
+  - **Faster API Responses**: Offload work from the main request path.
+  - **Decoupled Services**: Core application logic remains clean and independent of background task execution.
+  - **Extensibility**: Easily add new listeners (Functions) for existing events without modifying producer code.
+  - **Improved Reliability**: Background tasks benefit from Inngest's built-in durability and retries.
+</Callout>
 
 ## Event Structure
 
@@ -67,6 +77,14 @@ Every Inngest event follows a simple, consistent JSON structure, crucial for pre
   // Optional fields like `id`, `ts`, `v` are auto-added by Inngest
 }
 ```
+
+<Callout type="info" emoji="✍️">
+  **Best Practices for Event Design**
+  - **Naming**: Use clear, hierarchical names (e.g., `noun/verb_past_tense`, like `user/signed_up`, `order/payment_succeeded`). Refer to [Event Naming Tips](https://www.inngest.com/docs/features/events-triggers/event-format#tips-for-event-naming).
+  - **Payloads**: Include essential identifiers (`userId`, `orderId`) and just enough data for functions to act without excessive lookups. 
+  - **Data Size & Sensitivity**: Avoid embedding large data blobs (send references like IDs or URLs instead) or highly sensitive information. See detailed [Event Payload Best Practices](#event-payload-best-practices) later in this document.
+</Callout>
+
 **Key Components:**
 -   **`name` (string, required)**: A unique identifier for the event type. Use clear, hierarchical names (e.g., `user/signup`, `order/payment_succeeded`). [See Naming Tips](https://www.inngest.com/docs/features/events-triggers/event-format#tips-for-event-naming).
 -   **`data` (object, optional)**: A JSON-serializable payload containing details relevant to the event. Design this carefully as events are immutable once sent.
@@ -96,23 +114,29 @@ await inngest.send([
 ]); // See: https://www.inngest.com/docs/reference/typescript/sdk#send
 ```
 
+<Callout type="info" emoji="⚡️">
+  **Performance Tip: Batch Event Sending**
+  When sending multiple events, especially in bulk operations (e.g., after a batch import), always prefer `inngest.send([...events])`. This sends all events in a single network request, significantly reducing overhead and improving efficiency compared to sending them one by one.
+</Callout>
+
 ## Common Event Patterns
 
 Leverage these patterns to build scalable and maintainable event-driven systems.
 
 ### Fan-Out
-One event triggers multiple independent functions. This is ideal for decoupling processes; e.g., a `user/signup` event might trigger `SendWelcomeEmail`, `UpdateAnalytics`, and `ProvisionTrialWorkspace` functions, each handling a separate concern. [See Fan-out Guide](https://www.inngest.com/docs/guides/fan-out-jobs).
+One event triggers multiple independent functions. This is ideal for decoupling processes. For example, a single `user/signup` event might concurrently trigger separate functions for sending a welcome email, updating analytics, and provisioning trial resources.
 
-```typescript
-// Event: user/signed_up
-// Functions listening:
-// 1. sendWelcomeEmailFn - Handles sending a welcome email.
-// 2. setupNewUserAnalyticsFn - Tracks new user in analytics.
-// 3. createTrialResourcesFn - Provisions initial resources for a new user.
-```
+**Example: `user/signup` event triggers:**
+*   `sendWelcomeEmailFn` (handles sending a welcome email)
+*   `setupNewUserAnalyticsFn` (tracks new user in analytics)
+*   `createTrialResourcesFn` (provisions initial resources for a new user)
+
+Each function operates independently, managing its own logic and retries. [See Fan-out Guide](https://www.inngest.com/docs/guides/fan-out-jobs).
 
 ### Event Chains
-A function, after completing its work, sends a new event that triggers another function. This creates a sequence of operations. For example, `order/created` -> `ProcessPaymentFunction` -> (sends `order/payment_succeeded`) -> `FulfillOrderFunction`. This differs from [`step.invoke()`](/concepts/functions#function-composition) as it's fully decoupled.
+A function, after completing its work, sends a new event that then triggers a subsequent function. This creates a sequence of decoupled operations. For instance, an `order/created` event might trigger a `ProcessPaymentFunction`. Upon successful payment, this function sends an `order/payment_succeeded` event, which in turn triggers an `FulfillOrderFunction`.
+
+This pattern differs from `step.invoke()` (which is a direct, synchronous-like call between functions within the same trace) by maintaining complete decoupling between the functions; they only communicate via the event bus.
 
 ```typescript
 // In ProcessPaymentFunction, after successful payment:
@@ -124,12 +148,18 @@ await step.run("trigger-fulfillment", () =>
 
 ## Event Matching and Filtering
 
-Functions can subscribe to events with fine-grained control using matching and filtering rules defined in the [function trigger](https://www.inngest.com/docs/reference/functions/create#trigger). This is crucial for routing events to the correct workflows.
+Functions can subscribe to events with fine-grained control using matching and filtering rules defined in the [function trigger](https://www.inngest.com/docs/reference/functions/create#trigger). This is crucial for routing events to the correct workflows. Here's a quick overview:
+
+| Matching Type             | Description                                                                 | Example Trigger Configuration                      |
+| :------------------------ | :-------------------------------------------------------------------------- | :------------------------------------------------- |
+| **Wildcard Suffix**       | Match all events starting with a certain prefix.                            | `{ event: "user/*" }`                              |
+| **Wildcard (Alternatives)** | Match specific events from a list within a namespace.                     | `{ event: "order/{created,updated,cancelled}" }` |
+| **Multiple Event Names**  | Subscribe to a specific list of distinct event names.                     | `{ event: ["user/login", "user/profile_view"] }` |
+| **Conditional (`if`)**    | Filter events based on a JSONata expression against the event data payload. | `{ event: "order/created", if: "event.data.total > 1000" }` |
 
 ### Pattern Matching
 Use wildcards in event names for broader subscriptions.
 -   `user/*`: Matches `user/created`, `user/updated`, `user/deleted`.
--   `order/{created,updated,cancelled}`: Matches specific order lifecycle events.
 
 ```typescript
 // Listens to all events starting with "user/"
@@ -180,7 +210,7 @@ The [Inngest Dev Server](https://www.inngest.com/docs/dev-server) (`npx inngest-
 -   **Payload Inspection**: Examine the `data` of any event.
 -   **Step-by-Step Execution**: For functions using [steps](/concepts/steps), see the outcome of each step.
 
-## Productionizing Events: Advanced Topics
+## Production Tips
 
 Consider these aspects for robust, scalable event-driven systems.
 
@@ -199,6 +229,11 @@ Well-designed payloads are key to maintainable functions.
 -   **Sensitive Information**: PII like passwords, raw credit card numbers. Tokenize or encrypt if necessary, or better yet, design workflows to avoid needing it in event data.
 -   **Internal Implementation Details**: Avoid exposing database schemas or internal state that might change and break downstream consumers.
 
+<Callout type="error" emoji="🚨">
+  **Security Warning: Protect Sensitive Data**
+  Never include highly sensitive Personal Identifiable Information (PII) such as passwords, raw credit card numbers, or government-issued identification numbers directly in event payloads. If such data is indirectly needed for a workflow, pass secure references or tokens instead, and retrieve the sensitive data within a secure step in your function. Always prioritize data minimization in events.
+</Callout>
+
 [See official guidance on Event Payloads](https://www.inngest.com/docs/features/events-triggers/event-format).
 
 ### Error Handling for Events
@@ -206,7 +241,11 @@ Well-designed payloads are key to maintainable functions.
 Address failures in both sending and processing events.
 
 **Sending Failures:**
-The `inngest.send()` call can fail (network issues, Inngest API errors). Implement application-level retries or dead-lettering for critical events if immediate sending is crucial.
+
+When sending critical events, it's important to handle potential failures in the `inngest.send()` call (e.g., due to network issues or Inngest API errors). Consider these strategies:
+*   Implement application-level retries around your `inngest.send()` call for transient issues.
+*   For highly critical events where guaranteed delivery to Inngest is paramount, consider a dead-lettering mechanism or a local fallback queue if the initial send fails repeatedly.
+
 ```typescript
 try {
   await inngest.send(criticalEvent);
@@ -216,23 +255,10 @@ try {
 }
 ```
 
-**Function Processing Failures:**
-[Inngest functions](/concepts/functions) have built-in [retries](/concepts/functions#configuration). For non-retryable business errors, throw `NonRetriableError` from Inngest SDK. Use `onFailure` handlers for terminal failures.
-[See Error Handling Guide](https://www.inngest.com/docs/guides/error-handling).
-
-### Testing Event-Driven Workflows
-
-Thorough testing is vital.
-
-**Unit Testing Senders**: Mock `inngest.send()` to verify your application code emits correct events.
-```typescript
-// Using Jest
-jest.mock('./inngestClient', () => ({
-  inngest: { send: jest.fn() }
-}));
-// ... test your service ...
-expect(inngest.send).toHaveBeenCalledWith(expectedEventMatcher);
-```
+<Callout type="info" emoji="🧪">
+  **Testing Tip: Leverage `InngestTestEngine`**
+  For robust integration testing of your event-driven workflows, the `InngestTestEngine` (from `@inngest/test`) is invaluable. It allows you to send test events, run your functions locally within the engine, and assert step completion, function outcomes, and any events sent by your functions. This provides much higher confidence than unit testing alone.
+</Callout>
 
 **Integration Testing Functions**: Use the [`InngestTestEngine`](https://www.inngest.com/docs/reference/testing#inngesttestengine) from `@inngest/test` to send events and assert function execution, step completion, and outcomes. This is the most effective way to test workflows.
 
@@ -250,13 +276,11 @@ expect(runs[0].status).toBe("completed");
 
 ### Performance Considerations
 
-Optimize event handling for scalability.
+Optimize event handling for scalability with these key practices:
 
-**Batch Event Sending**: Use `inngest.send([...events])` to send multiple events in one API call, reducing network overhead. This is highly recommended for bulk operations.
-
-**Async Sending**: For non-critical events (e.g., analytics), consider sending them asynchronously from your main request path (`setImmediate` or a lightweight local queue) to avoid impacting API latency.
-
-**Payload Size**: Smaller payloads are processed faster. Follow [best practices](/concepts/events#event-payload-best-practices) to keep them lean.
+*   **Batch Event Sending**: Use `inngest.send([...events])` to send multiple events in one API call, significantly reducing network overhead. This is highly recommended for any bulk operations.
+*   **Async Sending (for non-critical events)**: For events not critical to the immediate response path (e.g., some analytics), consider sending them asynchronously from your main request path (`setImmediate` or a lightweight local queue) to avoid impacting API latency.
+*   **Payload Size Optimization**: Keep event payloads lean. Smaller payloads are processed faster and reduce network transfer times. Follow [best practices](/concepts/events#event-payload-best-practices) for payload design.
 
 ## Next Steps
 
@@ -270,3 +294,4 @@ Explore how [Functions](/concepts/functions) use events as triggers to execute b
 -   [Real-World Examples](/quick-start/examples) - Events in action.
 -   [Patterns & Anti-Patterns](/quick-start/patterns) - Designing event-driven systems.
 -   [Official Events & Triggers Documentation](https://www.inngest.com/docs/features/events-triggers) - Comprehensive Inngest reference.
+ 

@@ -8,6 +8,17 @@ Flow Control in Inngest provides sophisticated execution management that scales 
 
 Flow Control solves critical production challenges that arise when applications scale beyond simple use cases. Without proper flow control, your functions can overwhelm external APIs (leading to errors or blocks), consume excessive resources (increasing costs), or create unfair resource distribution across users (impacting user experience). Understanding these challenges helps you choose the right flow control mechanisms for your specific needs.
 
+import { Callout } from 'nextra/components'
+
+<Callout type="warning" emoji="🚦">
+  **Why is Flow Control Crucial?**
+  Implementing appropriate flow control is not an afterthought—it's essential for:
+  - **System Stability**: Prevents your functions or downstream services from being overwhelmed during traffic spikes.
+  - **Resource Protection**: Safeguards databases, third-party APIs, and internal services from excessive load.
+  - **Cost Management**: Avoids unexpected costs from too many function executions or API calls.
+  - **Fairness & Predictability**: Ensures reliable performance, especially in multi-tenant environments.
+</Callout>
+
 - **Traffic spikes** overwhelming external APIs ([Solution: Rate Limiting](/concepts/flow-control#rate-limiting), [Concurrency](/concepts/flow-control#concurrency-control))
 - **Resource contention** when multiple functions compete ([Solution: Concurrency Keys](/concepts/flow-control#concurrency-keys-multi-tenant-concurrency))
 - **Rate limits** from third-party services causing failures ([Solution: Rate Limiting](/concepts/flow-control#rate-limiting))
@@ -19,14 +30,16 @@ Flow Control solves critical production challenges that arise when applications 
 Limit how many function instances run simultaneously to protect your resources and manage load. Concurrency limits prevent your functions from overwhelming databases, third-party APIs, or internal services. This is crucial for maintaining system stability and ensuring fair resource access. [See official Concurrency Guide](https://www.inngest.com/docs/guides/concurrency).
 
 ### Global Concurrency
-Set a maximum number of instances for a specific function across your entire system. This is useful for functions that interact with resources having a global capacity limit.
+Set a maximum number of instances for a specific function across your entire system. 
+
+**Use Global Concurrency when:** Your function interacts with a shared resource that has a global capacity limit (e.g., a connection pool to a database, a specific third-party API endpoint with a global account limit).
 
 ```typescript
 // Only 10 instances of this function can run at once, globally
 export const processGlobalResource = inngest.createFunction(
   { 
     id: "process-global-resource",
-    concurrency: { limit: 10 } // SDK Ref: https://www.inngest.com/docs/reference/functions/concurrency
+    concurrency: { limit: 10 }
   },
   { event: "resource/request" },
   async ({ event, step }) => { /* ... */ }
@@ -34,7 +47,9 @@ export const processGlobalResource = inngest.createFunction(
 ```
 
 ### Concurrency Keys (Multi-Tenant Concurrency)
-Limit concurrency based on a specific key from the event data, often `event.data.userId` or `event.data.tenantId`. This ensures fairness in multi-tenant systems, preventing one busy user from consuming all available resources for a function. [See official Concurrency Keys Guide](https://www.inngest.com/docs/guides/concurrency#concurrency-keys-multi-tenant-concurrency).
+Limit concurrency based on a specific key from the event data, often `event.data.userId` or `event.data.tenantId`. 
+
+**Use Concurrency Keys when:** You need to ensure fairness in a multi-tenant system, preventing one busy user/tenant from consuming all available resources for a function and impacting others. It's also useful for operations that should be serialized per entity (e.g., processing updates for a specific user one at a time).
 
 ```typescript
 // Max 2 concurrent instances per user for this function
@@ -61,6 +76,8 @@ Control how frequently a function can execute over a given time period. Rate lim
 ### Global Rate Limiting
 Limit the total number of executions for a specific function across your entire system within a defined time window.
 
+**Use Global Rate Limiting when:** Your function interacts with a third-party API that has a global rate limit for your account, or when you want to generally cap the usage of a costly resource.
+
 ```typescript
 // Max 100 executions per hour for this function, globally
 export const callThirdPartyApi = inngest.createFunction(
@@ -69,7 +86,7 @@ export const callThirdPartyApi = inngest.createFunction(
     rateLimit: { 
       limit: 100, 
       period: "1h" // "1s", "1m", "1h", "1d"
-    } // SDK Ref: https://www.inngest.com/docs/reference/functions/rate-limit
+    }
   },
   { event: "api/request" },
   async ({ event, step }) => { /* ... */ }
@@ -77,7 +94,9 @@ export const callThirdPartyApi = inngest.createFunction(
 ```
 
 ### Key-Based Rate Limiting
-Limit execution frequency based on a specific key from the event data. This is useful for enforcing per-user or per-API-key rate limits for external services. [See official Keyed Rate Limiting Guide](https://www.inngest.com/docs/guides/rate-limiting#key-based-rate-limiting).
+Limit execution frequency based on a specific key from the event data. 
+
+**Use Key-Based Rate Limiting when:** You need to enforce per-user or per-API-key rate limits, often for external services where each of your users/keys has its own usage quota.
 
 ```typescript
 // Max 5 executions per minute per API key for this function
@@ -97,7 +116,9 @@ export const processApiRequest = inngest.createFunction(
 
 ## Event Batching
 
-Process multiple events together in a single function execution to improve efficiency and reduce costs, especially when interacting with APIs that support batch operations or when performing database updates. Events are collected until a maximum batch size or a timeout is reached. [See official Batching Guide](https://www.inngest.com/docs/guides/batching).
+Process multiple events together in a single function execution to improve efficiency and reduce costs, especially when interacting with APIs that support batch operations or when performing database updates. Events are collected until a maximum batch size or a timeout is reached. 
+
+**Key Benefit:** Reduces network overhead, decreases the number of function invocations, and can lower costs by processing multiple events in one go. Particularly effective for APIs supporting batch operations or for bulk database writes. [See official Batching Guide](https://www.inngest.com/docs/guides/batching).
 
 ```typescript
 // Batch up to 50 events or wait 10 seconds, whichever comes first
@@ -107,7 +128,7 @@ export const updateUserAnalytics = inngest.createFunction(
     batchEvents: { 
       maxSize: 50, 
       timeout: "10s" 
-    } // SDK Ref: https://www.inngest.com/docs/reference/functions/batch-events
+    }
   },
   { event: "user/activity" },
   async ({ events, step }) => { // Note: `events` is an array
@@ -121,7 +142,9 @@ export const updateUserAnalytics = inngest.createFunction(
 
 ## Debouncing
 
-Ensure a function only runs after a period of inactivity for events with the same key. This is useful for scenarios like auto-saving drafts, where you only want to trigger the save after the user has stopped typing for a certain duration. [See official Debouncing Guide](https://www.inngest.com/docs/guides/debounce).
+Ensure a function only runs after a period of inactivity for events with the same key. 
+
+**Key Benefit:** Prevents excessive function executions for rapidly firing events, ideal for UI-driven actions like auto-saving drafts, or for coalescing notifications to avoid spamming users. [See official Debouncing Guide](https://www.inngest.com/docs/guides/debounce).
 
 ```typescript
 // Only run if no "draft/updated" event with the same docId is received for 5s
@@ -131,7 +154,7 @@ export const autoSaveDraft = inngest.createFunction(
     debounce: { 
       period: "5s",
       key: "event.data.documentId"
-    } // SDK Ref: https://www.inngest.com/docs/reference/functions/debounce
+    }
   },
   { event: "draft/updated" },
   async ({ event, step }) => {
@@ -172,6 +195,11 @@ Monitor your flow control settings and their impact using the [Inngest Dashboard
 2.  **Monitor and adjust**: Use the [Inngest dashboard](https://www.inngest.com/docs/platform/monitor) to observe how your limits are affecting function execution and adjust as needed.
 3.  **Use keys effectively**: For multi-tenant systems, `event.data.userId` or `event.data.tenantId` are common and effective keys for fair resource distribution.
 4.  **Communicate with API providers**: Understand the rate limits of third-party services you integrate with.
+
+<Callout type="info" emoji="📈">
+  **Pro Tip: Iterate on Your Limits**
+  It's often best to start with more conservative flow control limits and then gradually loosen them as you observe real-world traffic and system performance. Use the Inngest dashboard and your own monitoring to understand bottlenecks and safely scale your functions.
+</Callout>
 
 ## Next Steps
 

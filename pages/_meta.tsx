@@ -1,6 +1,6 @@
 export default {
   index: "Introduction",
   "quick-overview": "Quick Overview",
-   concepts:"Concepts",
+   concepts:"Core Concepts",
    "quick-start":"Quick Start"
 }

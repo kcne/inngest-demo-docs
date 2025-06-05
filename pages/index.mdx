@@ -1,15 +1,22 @@
 # Introduction
-
-**Inngest** transforms the way developers build reliable background jobs and workflows. Instead of wrestling with queues, workers, and infrastructure, you write simple functions that automatically become durable, scalable workflows.
+ 
+**[Inngest](https://www.inngest.com/)** transforms the way developers build reliable background jobs and workflows. Instead of wrestling with queues, workers, and infrastructure, you write simple functions that automatically become durable, scalable workflows.
 
 ## What is Inngest?
-**Inngest** is an **[event-driven](https://en.wikipedia.org/wiki/Event-driven_programming) [durable execution](https://temporal.io/blog/what-is-durable-execution) platform** that combines two powerful concepts:
+**Inngest** is an **event driven durable execution platform** that combines two powerful concepts:
 
-**[Event-Driven Architecture](https://en.wikipedia.org/wiki/Event-driven_architecture)**: Your application sends [events](/concepts/events) when things happen (user signup, order placed, file uploaded). [Functions](/concepts/functions) automatically trigger in response to these events.
+- **[Event-Driven Architecture](https://en.wikipedia.org/wiki/Event-driven_architecture)**: Your application sends [events](/concepts/events) when things happen (user signup, order placed, file uploaded). [Functions](/concepts/functions) automatically trigger in response to these events.
 
-**[Durable Execution](https://docs.temporal.io/workflows#durable-execution)**: Functions are broken into [steps](/concepts/steps) that create checkpoints. If something fails, only the failed step retries - successful steps never re-run. <br/><br/>
+- **[Durable Execution](https://www.inngest.com/blog/principles-of-durable-execution)**: Functions are broken into [steps](/concepts/steps) that create checkpoints. If something fails, only the failed step retries - successful steps never re-run. <br/><br/>
 
 <img src="/introduction.png" alt="Inngest Introduction" />
+
+This TypeScript example showcases a typical Inngest function. Key things to note:
+- It's defined using `inngest.createFunction`.
+- Configuration includes an `id` for identification and an `event` to specify what triggers the function.
+- The main logic resides in an asynchronous handler (`async ({ event, step }) => { ... }`).
+- `step.run("step-name", () => { ... })` is used to define distinct, reliable units of work.
+- Each `step.run()` call creates a checkpoint. This means if a particular step fails, only that step is retried, and the results of any previous successful steps are preserved and not re-executed.
 
 ```typescript
 export const processOrder = inngest.createFunction(
@@ -32,6 +39,12 @@ export const processOrder = inngest.createFunction(
   }
 );
 ```
+
+import { Callout } from 'nextra/components'
+
+<Callout type="info" emoji="💡">
+  **Key Insight**: Inngest abstracts away the complexity of managing queues, workers, and state. You focus on writing your business logic as simple functions, and Inngest ensures they run reliably and scale effortlessly as durable workflows.
+</Callout>
 
 ## Why Inngest?
 

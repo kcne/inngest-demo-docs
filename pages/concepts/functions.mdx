@@ -1,6 +1,6 @@
 # Functions
 
-Functions are where your business logic lives in Inngest. Write them like regular TypeScript functions, and Inngest automatically handles the complex workflow orchestration - [retries](https://www.inngest.com/docs/features/inngest-functions/error-retries/retries), [state persistence](https://www.inngest.com/docs/learn/how-functions-are-executed#state-persistance), [error handling](https://www.inngest.com/docs/guides/error-handling), and [scaling](https://www.inngest.com/docs/guides/flow-control). Think of them as **smart functions** that respond to [Events](/concepts/events) and can pause, wait, and recover from failures without losing progress, embodying the principles of [Durable Execution](https://www.inngest.com/blog/principles-of-durable-execution).
+Functions are where your business logic lives in Inngest. Write them like regular TypeScript functions, and Inngest automatically handles the complex workflow orchestration - [retries](https://www.inngest.com/docs/features/inngest-functions/error-retries/retries), [state persistence](https://www.inngest.com/docs/learn/how-functions-are-executed#state-persistance), [error handling](https://www.inngest.com/docs/guides/error-handling), and [scaling](https://www.inngest.com/docs/guides/flow-control). Think of them as **smart functions** that respond to [Events](/concepts/events) and can pause, wait, and recover from failures without losing progress, embodying the principles of [Durable Execution](https://www.inngest.com/blog/principles-of-durable-execution). <br/> <br/>
 
 <img src="/function.jpg" alt="Function" />
 
@@ -14,11 +14,11 @@ export const processOrder = inngest.createFunction(
   // 1. Configuration
   { 
     id: "process-order",
-    concurrency: { limit: 10 }, // See: https://www.inngest.com/docs/guides/concurrency
-    retries: 3 // See: https://www.inngest.com/docs/features/inngest-functions/error-retries/retries
+    concurrency: { limit: 10 },
+    retries: 3
   },
   // 2. Trigger
-  { event: "order/created" }, // See: https://www.inngest.com/docs/features/events-triggers
+  { event: "order/created" },
   // 3. Handler
   async ({ event, step }) => {
     // Your business logic here using Inngest Step tools
@@ -41,6 +41,12 @@ The configuration object controls how your function executes in production. It a
 | **Error Handling** | What happens when all retries fail | `onFailure: async ({ error }) => {...}` ([Docs](https://www.inngest.com/docs/reference/functions/handling-failures)) |
 
 *For a full list of options, see the [official `createFunction` reference](https://www.inngest.com/docs/reference/functions/create#configuration).*
+
+<Callout type="info" emoji="💡">
+  **Pro Tip: `id` vs. `name`**
+  - The function `id` is critical for Inngest to track and manage your function; it should be unique and stable. Once deployed, changing an `id` is like creating a new function.
+  - The `name` is a human-readable display name for the Inngest dashboard and can be changed more freely without affecting function execution.
+</Callout>
 
 ### Triggers
 
@@ -80,11 +86,18 @@ The handler contains your business logic and receives powerful tools for buildin
 
 *For a complete list of handler arguments, see the [official handler reference](https://www.inngest.com/docs/reference/functions/create#handler).*
 
+<Callout type="warning" emoji="⚠️">
+  **Crucial: The `step` Object for Durability**
+  The `step` object is your primary tool for ensuring durable execution. Any I/O operation (API calls, database interactions), code that might fail, or points where you want to ensure resumability **must** be wrapped in a `step` tool (e.g., `step.run()`, `step.sleep()`, `step.waitForEvent()`). This is what allows Inngest to checkpoint progress and reliably retry only the necessary parts of your function.
+</Callout>
+
 ## Function Types
 
 Functions serve different purposes depending on how and when they execute. Each type solves specific workflow challenges and provides different execution guarantees. Understanding when to use each type helps you build more efficient and reliable systems.
 
 ### Background Functions
+**Choose this when:** You need to offload work from your API request-response cycle to keep responses fast, for tasks that don't require immediate completion before responding to the user.
+
 Process work outside your API request flow to keep responses fast. These functions handle time-consuming tasks like sending emails, processing images, or syncing data with external APIs.
 
 By moving this work to the background, your users get instant API responses while the heavy lifting happens asynchronously. Perfect for any work that doesn't need to complete before responding to a user request. [See official Background Jobs guide](https://www.inngest.com/docs/guides/background-jobs).
@@ -106,6 +119,8 @@ export const sendWelcomeEmail = inngest.createFunction(
 ```
 
 ### Scheduled Functions
+**Choose this when:** You need to run tasks on a recurring time-based schedule, replacing traditional cron jobs with more robust, observable, and maintainable solutions.
+
 Run tasks on a time-based schedule, similar to cron jobs but with built-in reliability and observability. These functions are ideal for recurring maintenance tasks, generating reports, or cleaning up expired records.
 
 Unlike traditional cron jobs, scheduled functions automatically retry on failure, log their execution, and provide visibility into their performance. [See official Scheduled Functions guide](https://www.inngest.com/docs/guides/scheduled-functions).
@@ -113,7 +128,7 @@ Unlike traditional cron jobs, scheduled functions automatically retry on failure
 ```typescript
 export const generateDailyReport = inngest.createFunction(
   { id: "daily-report" },
-  { cron: "0 9 * * *" }, // See: https://crontab.guru/
+  { cron: "0 9 * * *" },
   async ({ step }) => {
     const data = await step.run("collect-data", () => 
       analytics.getYesterdayStats()
@@ -127,6 +142,8 @@ export const generateDailyReport = inngest.createFunction(
 ```
 
 ### Multi-Step Workflows
+**Choose this when:** You have complex processes with multiple dependent operations, requiring high reliability and the ability to resume from failure points, especially if the process spans significant time or involves external systems.
+
 Break complex processes into reliable, resumable [steps](/concepts/steps) that can span minutes, hours, or even days. Each step creates a checkpoint, so if anything fails partway through, the workflow resumes from the last successful step rather than starting over.
 
 This is crucial for processes involving external APIs, payments, approvals, or any multi-stage business logic where partial completion would be problematic. [See official Multi-Step Functions guide](https://www.inngest.com/docs/guides/multi-step-functions).
@@ -171,17 +188,17 @@ Fine-tune how your functions execute in production to protect your infrastructur
 ```typescript
 {
   // Limit concurrent executions
-  concurrency: { limit: 5, key: "event.data.userId" }, // Guide: /concepts/flow-control#concurrency-control
+  concurrency: { limit: 5, key: "event.data.userId" },
   
   // Control execution frequency  
-  rateLimit: { limit: 100, period: "1h" }, // Guide: /concepts/flow-control#rate-limiting
+  rateLimit: { limit: 100, period: "1h" },
   
   // Process events in batches
-  batchEvents: { maxSize: 50, timeout: "10s" }, // Guide: /concepts/flow-control#event-batching
+  batchEvents: { maxSize: 50, timeout: "10s" },
   
   // Handle failures
-  retries: 3, // Docs: https://www.inngest.com/docs/features/inngest-functions/error-retries/retries
-  onFailure: async ({ error }) => alerting.send(error.message) // Docs: https://www.inngest.com/docs/reference/functions/handling-failures
+  retries: 3,
+  onFailure: async ({ error }) => alerting.send(error.message)
 }
 ```
 
@@ -189,7 +206,12 @@ Fine-tune how your functions execute in production to protect your infrastructur
 
 Build complex workflows by connecting functions together into larger business processes. Function composition allows you to create modular, reusable workflows where each function has a single responsibility. Read more in the [Invoking Functions Directly guide](https://www.inngest.com/docs/guides/invoking-functions-directly).
 
-You can invoke other functions synchronously to wait for their completion using `step.invoke()`, or trigger them asynchronously using `step.sendEvent()` ([see Event Chains](/concepts/events#event-chains)).
+<Callout type="info" emoji="🔗">
+  **`step.invoke()` vs. `step.sendEvent()` for Composition**
+  - **`step.invoke(function, ...)`**: Use for a more direct, synchronous-like call. The parent function waits for the invoked (child) function to complete and receive its result. Both functions are part of the same trace, and the invocation itself is a durable step.
+  - **`step.sendEvent(eventName, ...)`**: Use for fully decoupled, asynchronous triggering. The parent function sends an event and moves on. A separate function (or functions) listening for that event will be triggered independently. This is true event-driven choreography.
+  Choose based on whether you need a direct result and tight coupling or prefer loose coupling and asynchronous processing.
+</Callout>
 
 ### Calling Other Functions (Synchronous)
 Use `step.invoke()` to call other functions and wait for their results. This creates a parent-child relationship where the calling function waits for the invoked function to complete before continuing. [See `step.invoke()` reference](https://www.inngest.com/docs/reference/functions/step-invoke).
@@ -235,6 +257,13 @@ await t.send({ name: "order/created", data: { orderId: "123" } });
 const runs = await t.waitForRuns("process-order");
 ```
 
+<Callout type="info" emoji="🎯">
+  **Key Testing Strategy: Combine Unit and Integration Tests**
+  - **Unit Tests**: Use `createStepTools()` from `inngest/test` to mock step behaviors (`step.run`, `step.sleep`, etc.) and test the internal logic of your function handler in isolation. This is fast and good for verifying conditional logic within your function.
+  - **Integration Tests**: Use `InngestTestEngine` from `inngest/test` to perform end-to-end testing of your functions. Send actual events, let Inngest execute your function (including all its steps), and verify the final outcome, any events sent, or side effects. This gives higher confidence in the overall workflow.
+  Both are crucial for robust, production-ready functions.
+</Callout>
+
 import { Callout } from 'nextra/components'
 
 <Callout type="info">
@@ -247,11 +276,12 @@ import { Callout } from 'nextra/components'
 
 ## Best Practices
 
-1. **Use descriptive step names** - They appear in logs and debugging. [More on Naming Steps](/concepts/steps#step-best-practices).
-2. **Keep steps atomic** - Each step should do one thing well. [More on Atomicity](/concepts/steps#2-keep-steps-atomic).
-3. **Handle errors gracefully** - Use try/catch for business logic errors. [Error Handling Patterns](/quick-start/patterns#error-handling-in-steps).
-4. **Leverage type safety** - Define event types for better development experience. [TypeScript with Inngest](https://www.inngest.com/docs/typescript).
-5. **Monitor function performance** - Use the [Inngest dashboard](https://www.inngest.com/docs/platform/monitor) to track metrics.
+1. **Use Descriptive Step Names**: Clear step names (e.g., `"charge-stripe-customer"`) are crucial for observability in logs and the Inngest dashboard. Ensure they are unique within a function. ([More on Naming Steps](/concepts/steps#step-best-practices)).
+2. **Keep Steps Atomic**: Design each `step.run()` to perform one logical, retryable unit of work. This improves error isolation and workflow clarity. ([More on Atomicity](/concepts/steps#2-keep-steps-atomic)).
+3. **Handle Errors Gracefully**: Implement `try/catch` blocks within steps for specific business logic errors, and use `NonRetriableError` for failures that shouldn't be retried. Leverage function-level `onFailure` handlers for terminal error states. ([Error Handling Patterns](/quick-start/patterns#error-handling-in-steps)).
+4. **Leverage Type Safety**: Define and use types for your event payloads and function inputs/outputs. This greatly improves the development experience and helps prevent runtime errors. ([TypeScript with Inngest](https://www.inngest.com/docs/typescript)).
+5. **Monitor Function Performance**: Regularly use the [Inngest dashboard](https://www.inngest.com/docs/platform/monitor) to track execution times, success/failure rates, and log output to identify issues or areas for optimization.
+6. **Idempotent Design for External Interactions**: When steps interact with external systems, ensure those interactions are idempotent or handled in a way that retries don't cause duplicate operations (e.g., using idempotency keys if supported by the external API).
 
 ## Next Steps
 

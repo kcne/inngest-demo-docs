@@ -32,7 +32,7 @@ Learn from complete implementations of common Inngest use cases. Each example de
 ```typescript
 // Event sent when a new user signs up
 type UserSignupEvent = {
-  name: "user/signup"; // See: Event Naming Best Practices (/quick-start/patterns#use-specific-event-names)
+  name: "user/signup";
   data: {
     userId: string;
     email: string;
@@ -56,7 +56,7 @@ type UserActivatedFeatureEvent = {
 
 ```typescript
 import { inngest } from "../../inngest/client"; // Your Inngest client
-import { NonRetriableError } from "inngest"; // See: https://www.inngest.com/docs/reference/typescript/inngest#nonretriableerror
+import { NonRetriableError } from "inngest";
 
 // Define event types (as above)
 
@@ -68,9 +68,9 @@ export const userOnboardingSequence = inngest.createFunction(
     concurrency: { 
       key: "event.data.userId", 
       limit: 1 
-    }, // See: /concepts/flow-control#concurrency-keys-multi-tenant-concurrency
+    },
     // Configure retries for transient errors
-    retries: 3 // See: https://www.inngest.com/docs/features/inngest-functions/error-retries/retries
+    retries: 3
   },
   { event: "user/signup" }, // Trigger for the function
   async ({ event, step, logger }) => {
@@ -98,7 +98,7 @@ export const userOnboardingSequence = inngest.createFunction(
       event: "user/activated_feature_X",
       timeout: "5d",
       // Ensure we only match events for this specific user
-      if: `event.data.userId == "${userId}"`, // See: https://www.inngest.com/docs/reference/functions/step-wait-for-event#if-expression
+      if: `event.data.userId == "${userId}"`,
     });
 
     if (activationEvent) {
@@ -208,7 +208,7 @@ export const orderOrchestrator = inngest.createFunction(
       logger.error("Payment processing failed", { orderId, error: error.message });
       // Send event for user notification about payment failure
       await step.sendEvent("send-payment-failed-notification", {
-        name: "user/payment_failed", // See: /quick-start/patterns#use-specific-event-names
+        name: "user/payment_failed",
         data: { userId, orderId, reason: error.message },
       });
       // Stop further processing for this order if payment fails critically
@@ -250,7 +250,7 @@ const inventoryService = { decrementStock: async (items: any) => { console.log("
 ```
 
 **Why Inngest Excels Here:**
-Inngest simplifies complex orchestrations. [`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows) allows breaking down the monolith into manageable, independently testable, and durable functions. Error handling within steps ensures issues like payment declines are handled gracefully without derailing the entire workflow.
+Inngest simplifies complex orchestrations. [`step.invoke()`](/concepts/steps#stepinvoke---composable-workflows) allows breaking down monolithic processes into manageable, independently testable, and durable functions. Built-in error handling and durable steps ensure that issues like payment declines are handled gracefully without derailing the entire order workflow.
 
 **Learn More:**
 - [Official Guide: Composing Workflows with `step.invoke`](https://www.inngest.com/docs/guides/invoking-functions-directly)
@@ -377,10 +377,9 @@ const db = {
 ```
 
 **Why Inngest Excels Here:**
-Complex dunning logic that spans days or weeks is notoriously hard to build with traditional job queues. Inngest's `step.sleep()` and durable step retries simplify this immensely, allowing you to write straightforward loops and conditional logic that reliably manage the entire subscription lifecycle.
+Complex dunning logic spanning days or weeks is challenging with traditional job queues. Inngest's `step.sleep()` and durable step-based retries greatly simplify building such stateful loops and conditional recovery processes, making the entire subscription lifecycle more manageable and reliable.
 
 **Learn More:**
-- [Official Guide: Building Subscription Billing](https://www.inngest.com/docs/guides/subscription-billing-template) (if a specific guide exists, otherwise use more general links)
 - [Concept: Scheduled Functions](/concepts/functions#scheduled-functions)
 - [Pattern: Idempotent Step Design](/quick-start/patterns#idempotent-step-design) (crucial for billing)
 
@@ -411,7 +410,7 @@ export const contentModerationPipeline = inngest.createFunction(
     id: "content-moderation-pipeline",
     name: "Content Moderation Workflow",
     // Potentially high volume, so concurrency might be needed for AI step
-    concurrency: { limit: 20 } // See: /concepts/flow-control#concurrency-control
+    concurrency: { limit: 20 }
   },
   { event: "content/submitted" }, // data: { contentId, text, userId }
   async ({ event, step, logger }) => {
@@ -484,10 +483,9 @@ const escalationService = { notifyAdmins: async (..._args: any[]) => console.log
 ```
 
 **Why Inngest Excels Here:**
-Human-in-the-loop workflows are often complex. [`step.waitForEvent()`](/concepts/steps#stepwaitforevent---wait-for-external-input) simplifies this by allowing a workflow to pause indefinitely (or with a timeout) until a specific action occurs, all while maintaining state and context without external databases for tracking.
+Human-in-the-loop workflows often involve complex state management. Inngest's [`step.waitForEvent()`](/concepts/steps#stepwaitforevent---wait-for-external-input) simplifies this by allowing a workflow to durably pause (with an optional timeout) until an external signal (like a human review decision event) is received, all while maintaining state and context without needing external databases for tracking the pause state.
 
 **Learn More:**
-- [Official Guide: Human in the Loop Workflows](https://www.inngest.com/docs/guides/human-in-the-loop) (if available)
 - [Concept: Waiting for Events](/concepts/events#waiting-for-events) (or point to `step.waitForEvent` in Steps)
 - [Pattern: Conditional Logic with Steps](/quick-start/patterns) (if we create this pattern explicitly)
 
@@ -510,8 +508,16 @@ Human-in-the-loop workflows are often complex. [`step.waitForEvent()`](/concepts
 
 *(Implementation for Data Processing Pipeline would be more extensive and is omitted here for brevity but would follow similar patterns of defining event types and function logic with detailed step usage as shown in prior examples.)*
 
+While a full implementation is extensive, a typical Inngest-based data processing pipeline might involve:
+*   **Triggering**: An event like `data_source/new_file_uploaded` or a scheduled (cron) trigger.
+*   **Extraction**: A step to fetch or load the raw dataset (e.g., from S3, a database, or an API).
+*   **Chunking/Parallel Processing**: For large datasets, `step.parallel()` would be crucial to process multiple chunks or records concurrently, significantly speeding up the transformation stage.
+*   **Transformation**: Each parallel branch could invoke another Inngest function (`step.invoke()`) or run a series of `step.run()` calls to clean, transform, and enrich a portion of the data.
+*   **Loading**: Steps to load the transformed data into a data warehouse, database, or another storage system. Batching might be used here for efficiency.
+*   **Error Handling**: Robust error handling within each step or invoked function to manage issues with specific chunks without halting the entire pipeline, possibly sending failed chunks to a dead-letter queue or triggering alerts.
+*   **Aggregation/Finalization**: After parallel processing, a final set of steps might aggregate results, generate a summary report, or send completion notifications.
+
 **Learn More:**
 - [Concept: Parallel Steps](/concepts/steps#stepparallel---concurrent-operations)
-- [Guide: Large Scale Data Processing with Inngest](https://www.inngest.com/docs/guides/batch-processing) (if a specific guide exists)
 
 These examples should provide a solid foundation for understanding how to apply Inngest's powerful features to build a wide variety of reliable and scalable applications. Remember to consult the **[Core Concepts](/concepts)** and **[Patterns & Anti-Patterns](/quick-start/patterns)** for deeper insights as you build.

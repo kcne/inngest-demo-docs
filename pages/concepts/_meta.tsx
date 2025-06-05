@@ -1,5 +1,5 @@
 export default {
-  index: "Overview",
+  index: "Core Concepts",
   events: "Events",
   functions: "Functions",
   steps: "Steps",

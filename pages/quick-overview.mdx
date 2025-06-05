@@ -2,7 +2,7 @@
 
 **Inngest** transforms background jobs from a complex infrastructure problem into simple code you write and deploy anywhere. Traditional [background job systems](https://en.wikipedia.org/wiki/Job_queue) require you to manage [queues](https://en.wikipedia.org/wiki/Message_queue), workers, job persistence, and retry logic separately from your application code.
 
-**Inngest** takes a different approach: write [TypeScript functions](https://www.inngest.com/docs/reference/typescript) that respond to [events](/concepts/events), and Inngest handles the reliability, [retries](https://www.inngest.com/docs/features/inngest-functions/error-retries/retries), and state management. Your functions become [durable workflows](https://www.inngest.com/blog/principles-of-durable-execution) automatically - no queues to configure, no workers to manage. <br/><br/>
+**Inngest** takes a different approach: write TypeScript functions that respond to [events](/concepts/events), and Inngest handles the reliability, retries, and state management. Your functions become [durable workflows](https://www.inngest.com/blog/principles-of-durable-execution) automatically - no queues to configure, no workers to manage. <br/><br/>
 
 <img src="/quick-overview.png" alt="Inngest Introduction" style={{ width: '70%', height: 'auto', display: 'block', margin: '0 auto' }} />
 
@@ -15,7 +15,7 @@ Instead of managing [queues](https://redis.io/docs/data-types/queues/), workers,
 
 ```typescript
 // Complex setup with Redis, Bull queues, worker processes
-const Queue = require('bull'); // See: https://bullmq.io/
+const Queue = require('bull');
 const emailQueue = new Queue('email');
 
 // Job producer
@@ -35,11 +35,11 @@ emailQueue.process('welcome-email', async (job) => {
 ```typescript
 // Just write your business logic
 export const sendWelcomeEmail = inngest.createFunction(
-  { id: "send-welcome-email" }, // See: Function Configuration in /concepts/functions
-  { event: "user/signup" },      // See: Event Triggers in /concepts/events
+  { id: "send-welcome-email" }, 
+  { event: "user/signup" },
   async ({ event, step }) => {
     // Each step is automatically retried and memoized
-    const user = await step.run("fetch-user", () => // See: step.run in /concepts/steps
+    const user = await step.run("fetch-user", () =>
       db.users.findById(event.data.userId)
     );
 
@@ -58,6 +58,23 @@ export const sendWelcomeEmail = inngest.createFunction(
 
 This means no duplicate emails, no double charges, and no wasted work. Your functions pick up exactly where they left off.
 
+### Key Differences Summarized
+
+Here's a breakdown of the advantages Inngest offers over traditional background job systems:
+
+*   **Simplified Setup**: Eliminates the need for manual queue configuration (e.g., BullMQ, Redis) and separate worker processes.
+*   **Reduced Boilerplate**: Write less code and focus purely on your business logic within Inngest functions, rather than extensive setup for queues and workers.
+*   **Durable Steps & Checkpoints**: Each `step.run()` call within an Inngest function acts as a durable checkpoint.
+*   **Granular Retries**: If a specific step fails, *only that step* is retried. Successfully completed preceding steps are never re-executed, preventing common issues like duplicate charges or repeated emails.
+*   **Automatic State Management**: Inngest transparently handles state persistence across retries and between steps.
+*   **Enhanced Reliability**: Workflows automatically resume from the point of failure, significantly improving the robustness of your background processes.
+
+import { Callout } from 'nextra/components'
+
+<Callout type="info" emoji="💡">
+  **Pro Tip**: The `step.run()` approach isn't just about cleaner code; it fundamentally changes retry behavior. Only the *failed part* of your logic reruns, saving processing time and preventing duplicate operations on work that has already succeeded!
+</Callout>
+
 ## How does it work
 
 Inngest combines **[Event Driven Architecture](https://en.wikipedia.org/wiki/Event-driven_architecture)** with **[Durable Execution](https://www.inngest.com/blog/principles-of-durable-execution)**: [Events](/concepts/events) from your app trigger [functions](/concepts/functions) automatically, while [steps](/concepts/steps) inside those functions create checkpoints for reliability. This means your workflows respond to real-time events but can survive failures and recover gracefully.
@@ -68,7 +85,7 @@ Your app emit [events](/concepts/events) when things happen:
 
 ```typescript
 // In your API routes, webhooks, or anywhere
-await inngest.send({ // See: https://www.inngest.com/docs/events
+await inngest.send({ //
   name: "user/signup",
   data: { userId: 123, email: "jane@example.com", plan: "pro" }
 });
@@ -80,11 +97,11 @@ await inngest.send({ // See: https://www.inngest.com/docs/events
 // This runs when user/signup events are sent
 export const welcomeSequence = inngest.createFunction(
   { id: "welcome-sequence" },
-  { event: "user/signup" }, // See: Event Triggers in /concepts/functions
+  { event: "user/signup" }, //
   async ({ event, step }) => {
     // Multi-step workflow that can span days
     await step.run("send-welcome", () => sendWelcome(event.data));
-    await step.sleep("wait-1-day", "1d"); // See: step.sleep in /concepts/steps
+    await step.sleep("wait-1-day", "1d"); 
     await step.run("send-tips", () => sendTips(event.data));
     await step.sleep("wait-3-days", "3d");
     await step.run("check-engagement", () => checkEngagement(event.data));
@@ -105,7 +122,7 @@ Your functions live in your codebase and [deploy with your app](https://www.inng
 
 ```typescript
 // app/api/inngest/route.ts (Next.js example)
-import { serve } from "inngest/next"; // See: https://www.inngest.com/docs/learn/serving-inngest-functions
+import { serve } from "inngest/next";
 import { inngest } from "./client";
 import { welcomeSequence, processPayment } from "./functions";
 
@@ -123,73 +140,38 @@ After deployment, [sync your app with Inngest Cloud](https://www.inngest.com/doc
 curl -X PUT https://your-app.com/api/inngest
 ```
 
-## Developer Experience
-
-| Benefit | Key Features |
-|---------|-------------|
-| 🚀 **Immediate Productivity** | Write functions like any other code • No separate infrastructure • [TypeScript-first](https://www.inngest.com/docs/reference/typescript) with IntelliSense |
-| 🛡️ **Built-in Reliability** | Automatic [retries](https://www.inngest.com/docs/features/inngest-functions/error-retries/retries) with [exponential backoff](https://en.wikipedia.org/wiki/Exponential_backoff) • State persistence across failures • [Exactly-once execution](https://www.inngest.com/docs/features/inngest-functions/error-retries/retries#steps-and-retries) for steps |
-| 📈 **Scales Effortlessly** | From prototype to millions of events • Built-in [Concurrency Control](/concepts/flow-control#concurrency-control) • [Rate Limiting](/concepts/flow-control#rate-limiting) • [Batching](/concepts/flow-control#event-batching) • [Multi-tenant isolation](https://www.inngest.com/docs/guides/concurrency#concurrency-keys-multi-tenant-concurrency) |
-| 🔍 **Observable by Default** | [Visual timeline](https://www.inngest.com/docs/platform/monitor/inspecting-function-runs) of step execution • Real-time [logs and debugging](https://www.inngest.com/docs/guides/logging) • [Performance metrics](https://www.inngest.com/docs/platform/monitor/observability-metrics) |
-
 ## Common Use Cases
 
-### Background Processing
-```typescript
-// Process uploads, send emails, sync data
-{ event: "file/uploaded" } → processFile()           // See: File processing examples
-{ event: "user/signup" } → sendWelcomeSequence()     // See: /quick-start/examples#user-onboarding-sequence
-{ event: "order/created" } → processOrder()          // See: /quick-start/examples#e-commerce-order-processing
-```
+Inngest is versatile for various background tasks and workflows. Here are some common categories:
 
-*Learn more: [Background Jobs Guide](https://www.inngest.com/docs/guides/background-jobs)*
-
-### Multi-Step Workflows
-```typescript
-// Onboarding, approval flows, subscription billing
-await step.run("step1", () => ...); 
-await step.sleep("wait", "2d");
-await step.run("step2", () => ...);
-await step.waitForEvent("wait-approval", { event: "user/approved" }); // See: /concepts/steps#stepwaitevent---wait-for-external-input
-```
-
-*Learn more: [Multi-Step Functions Guide](https://www.inngest.com/docs/guides/multi-step-functions)*
-
-### Scheduled Tasks
-```typescript
-// Reports, cleanups, recurring billing
-{ cron: "0 9 * * *" } → generateDailyReport()       // See: /concepts/functions#scheduled-functions
-{ cron: "0 0 1 * *" } → processMonthlyBilling()   // See: /quick-start/examples#subscription-billing-workflow
-```
-
-*Learn more: [Scheduled Functions Guide](https://www.inngest.com/docs/guides/scheduled-functions)*
-
-### Fan-out Processing
-```typescript
-// One event triggers multiple functions
-"order/created" → [processPayment(), updateInventory(), createShipment()]
-```
-
-*Learn more: [Event Fan-out Patterns](/concepts/events#fan-out) and [Fan-out Guide](https://www.inngest.com/docs/guides/fan-out-jobs)*
+| Use Case Category     | Typical Applications                                     | Learn More / See Examples                                                                                                                                                                                                                            |
+| :-------------------- | :------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Background Processing | Process uploads, send emails, sync data                  | [Background Jobs Guide](https://www.inngest.com/docs/guides/background-jobs) <br/> [User Onboarding Example](/quick-start/examples#user-onboarding-sequence) <br/> [E-commerce Example](/quick-start/examples#e-commerce-order-processing)          |
+| Multi-Step Workflows  | Onboarding, approval flows, subscription billing         | [Multi-Step Functions Guide](https://www.inngest.com/docs/guides/multi-step-functions) <br/> [step.sleep()](/concepts/steps#stepsleep---scheduled-delays) <br/> [step.waitForEvent()](/concepts/steps#stepwaitforevent---wait-for-external-input) |
+| Scheduled Tasks       | Reports, cleanups, recurring billing                     | [Scheduled Functions Guide](https://www.inngest.com/docs/guides/scheduled-functions) <br/> [Scheduled Functions Concept](/concepts/functions#scheduled-functions) <br/> [Subscription Billing Example](/quick-start/examples#subscription-billing-workflow) | 
+| Fan-out Processing    | One event triggers multiple independent functions        | [Event Fan-out Patterns](/concepts/events#fan-out) <br/> [Fan-out Guide](https://www.inngest.com/docs/guides/fan-out-jobs)                                                                                                                          |
 
 ## Next Steps
 
-Ready to dive deeper? Inngest offers a rich ecosystem of features and best practices to explore.
+Ready to continue your Inngest journey? Here's how you can expand your knowledge and start building:
 
-**Understand the [core concepts](/concepts) in detail:**
-- **[Events](/concepts/events)** - How triggers work, [event naming](https://www.inngest.com/docs/features/events-triggers/event-format#tips-for-event-naming), and [event patterns](https://www.inngest.com/docs/features/events-triggers)
-- **[Functions](/concepts/functions)** - Building workflows, [function configuration](https://www.inngest.com/docs/reference/functions/create), and [function types](https://www.inngest.com/docs/learn/inngest-functions#kinds-of-inngest-functions)
-- **[Steps](/concepts/steps)** - The [durability engine](https://www.inngest.com/docs/features/inngest-functions/steps-workflows), [step tools](https://www.inngest.com/docs/learn/inngest-steps#available-step-methods), and checkpointing
-- **[Flow Control](/concepts/flow-control)** - Production scaling with [concurrency](https://www.inngest.com/docs/guides/concurrency), [rate limiting](https://www.inngest.com/docs/guides/rate-limiting), and [batching](https://www.inngest.com/docs/guides/batching)
+### Deep Dive into Core Concepts
+Understand the foundational building blocks of Inngest:
+- **[Events](/concepts/events):** Learn about event structure, sending events, patterns like fan-out, and filtering. ([Event Naming Tips](https://www.inngest.com/docs/features/events-triggers/event-format#tips-for-event-naming), [Event Patterns](https://www.inngest.com/docs/features/events-triggers))
+- **[Functions](/concepts/functions):** Explore function anatomy, configuration, triggers (including cron), and composition. ([Function Configuration](https://www.inngest.com/docs/reference/functions/create), [Function Types](https://www.inngest.com/docs/learn/inngest-functions#kinds-of-inngest-functions))
+- **[Steps](/concepts/steps):** Master durable execution with `step.run()`, `step.sleep()`, `step.waitForEvent()`, and `step.parallel()`. Understand checkpoints and memoization. ([Step Tools](https://www.inngest.com/docs/learn/inngest-steps#available-step-methods))
+- **[Flow Control](/concepts/flow-control):** Manage production workloads with concurrency limits, rate limiting, and event batching. ([Concurrency Guide](https://www.inngest.com/docs/guides/concurrency), [Rate Limiting Guide](https://www.inngest.com/docs/guides/rate-limiting), [Batching Guide](https://www.inngest.com/docs/guides/batching))
 
-**See it in action:**
-- **[Real-World Examples](/quick-start/examples)** - Complete implementations for [user onboarding](/quick-start/examples#user-onboarding-sequence), [e-commerce](/quick-start/examples#e-commerce-order-processing), and [content moderation](/quick-start/examples#content-moderation-pipeline)
-- **[Patterns & Anti-Patterns](/quick-start/patterns)** - Best practices and common pitfalls to avoid
+### Explore Practical Implementations
+See how these concepts are applied in production-ready scenarios:
+- **[Real-World Examples](/quick-start/examples):** Study complete code for user onboarding, e-commerce flows, content moderation, and more.
+- **[Patterns & Anti-Patterns](/quick-start/patterns):** Learn best practices for designing robust functions and avoiding common pitfalls.
 
-**Start building:**
-- **[Quick Start Guide](/quick-start)** - Framework-specific setup instructions
-- **[Local Development with Dev Server](https://www.inngest.com/docs/dev-server)** - Visual debugging and local testing
-- **[Official Getting Started Guides](https://www.inngest.com/docs/getting-started)** for [Next.js](https://www.inngest.com/docs/getting-started/nextjs-quick-start), [Node.js](https://www.inngest.com/docs/getting-started/nodejs-quick-start), [Python](https://www.inngest.com/docs/getting-started/python-quick-start), and [Go](https://www.inngest.com/docs/getting-started/go-quick-start)
+### Start Building
+Get hands-on and integrate Inngest into your project:
+- **[Quick Start Guide](/quick-start):** Follow framework-specific setup instructions to get your first function running.
+- **[Local Development with Dev Server](https://www.inngest.com/docs/dev-server):** Utilize the Dev Server for visual debugging and local testing.
+- **[Official Getting Started Guides](https://www.inngest.com/docs/getting-started):** Access detailed guides for [Next.js](https://www.inngest.com/docs/getting-started/nextjs-quick-start), [Node.js](https://www.inngest.com/docs/getting-started/nodejs-quick-start), [Python](https://www.inngest.com/docs/getting-started/python-quick-start), and [Go](https://www.inngest.com/docs/getting-started/go-quick-start).
 
 ---
 

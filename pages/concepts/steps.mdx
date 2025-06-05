@@ -35,7 +35,7 @@ export const processOrderWithSteps = inngest.createFunction(
   async ({ event, step }) => {
     const order = await step.run("fetch-order", () => 
       fetchOrder(event.data.orderId)
-    ); // See: step.run reference (https://www.inngest.com/docs/reference/functions/step-run)
+    );
 
     const payment = await step.run("charge-payment", () => 
       chargePayment(order)
@@ -61,10 +61,20 @@ export const processOrderWithSteps = inngest.createFunction(
 ```
 
 ### Step Execution Model
-Each step executes in isolation and communicates with Inngest's execution engine. When a step completes successfully, its result is stored permanently and will never re-execute, even if the function is retried. If a step fails, only that specific step retries while all previous successful steps return their [memoized](/concepts/steps#memoization) results. [Dive deeper into the step lifecycle](https://www.inngest.com/docs/features/inngest-functions/steps-workflows/step-execution-lifecycle).
+Each step executes in isolation and communicates with Inngest's execution engine. When a step completes successfully, its result is stored permanently and will never re-execute, even if the function is retried. If a step fails, only that specific step retries while all previous successful steps return their [memoized](/concepts/steps#memoization) results.
 
 ### Memoization
 Successful step outputs are saved (memoized) and reused if the function retries. This prevents duplicate work and ensures steps are [idempotent](https://en.wikipedia.org/wiki/Idempotence#Computer_science). For example, if `chargePayment()` succeeds and `updateInventory()` fails, `chargePayment()` won't run again on retry – Inngest uses its saved result. [Read more on Memoization in Inngest](https://www.inngest.com/docs/features/inngest-functions/steps-workflows#memoization).
+
+import { Callout } from 'nextra/components'
+
+<Callout type="info" emoji="✅">
+  **Key Benefit: Idempotency and Efficiency via Memoization**
+  The automatic memoization of successful step results is a cornerstone of Inngest's reliability. It means:
+  - **No Duplicate Work**: Operations that have already completed successfully (e.g., sending an email, charging a card) will *not* re-run if a later step fails.
+  - **True Idempotency**: Your functions behave idempotently at the step level, simplifying logic and preventing unintended side effects during retries.
+  - **Efficiency**: Saves execution time and resources by not re-processing what has already been done.
+</Callout>
 
 ## Step Tools
 
@@ -84,7 +94,9 @@ The `step` object provides various tools for orchestrating complex workflows:
 Beyond simple sequential execution, steps enable sophisticated workflow patterns that handle real-world complexity. These patterns are essential for building robust, production-grade applications.
 
 ### `step.sleep` - Scheduled Delays
-Pause a workflow for a specific duration, from seconds to days using [`step.sleep()`](https://www.inngest.com/docs/reference/functions/step-sleep). This is perfect for creating drip email campaigns, reminder systems, or any process that needs to wait for a period before continuing. The state of the workflow is preserved during the sleep. [See sleep use cases](https://www.inngest.com/docs/guides/scheduled-functions#sleeps-for-dynamic-schedules).
+Pause a workflow for a specific duration, from seconds to days, using [`step.sleep()`](https://www.inngest.com/docs/reference/functions/step-sleep). The state of the workflow is preserved during the sleep.
+
+**Ideal for**: Creating drip email campaigns, reminder systems, scheduled follow-ups, or any process that needs to wait for a period before continuing. [See sleep use cases](https://www.inngest.com/docs/guides/scheduled-functions#sleeps-for-dynamic-schedules).
 
 ```typescript
 // Example: Follow up after 7 days if user hasn't activated
@@ -96,7 +108,9 @@ if (!user.activated) {
 ```
 
 ### `step.waitForEvent` - Wait for External Input
-Pause a workflow until a specific external event occurs using [`step.waitForEvent()`](https://www.inngest.com/docs/reference/functions/step-wait-for-event). This is ideal for approval steps, waiting for user actions, or integrating with asynchronous third-party systems. The function remains dormant until the target event is received, then resumes with the event's data. [See waitForEvent use cases](https://www.inngest.com/docs/guides/wait-for-event) and [event matching options](https://www.inngest.com/docs/reference/functions/step-wait-for-event#arguments).
+Pause a workflow until a specific external event occurs using [`step.waitForEvent()`](https://www.inngest.com/docs/reference/functions/step-wait-for-event). The function remains dormant until the target event is received (or a timeout is hit), then resumes with the event's data.
+
+**Ideal for**: Approval steps, waiting for user actions (e.g., email verification click), or integrating with asynchronous third-party systems that use webhooks
 
 ```typescript
 // Example: Expense report approval
@@ -112,8 +126,15 @@ if (approvalEvent?.data.status === "approved") {
 }
 ```
 
+<Callout type="info" emoji="🚀">
+  **Pro Tip: Orchestrate Complex Interactions**
+  Tools like `step.waitForEvent()` and `step.invoke()` (discussed next) are powerful for building sophisticated workflows. You can orchestrate human-in-the-loop processes (e.g., manager approvals), coordinate with external systems via webhooks, or compose multiple Inngest functions into larger, cohesive business processes—all while maintaining the durability and observability Inngest provides.
+</Callout>
+
 ### `step.invoke` - Composable Workflows
-Break down large workflows into smaller, reusable Inngest functions using [`step.invoke()`](https://www.inngest.com/docs/reference/functions/step-invoke). This calls another Inngest function and waits for its result, similar to a synchronous function call but with full durability and observability for the invoked function. This promotes modularity and testability. [See function composition guide](https://www.inngest.com/docs/guides/invoking-functions-directly).
+Break down large workflows into smaller, reusable Inngest functions using [`step.invoke()`](https://www.inngest.com/docs/reference/functions/step-invoke). This calls another Inngest function and waits for its result, similar to a synchronous function call but with full durability and observability for the invoked function.
+
+**Ideal for**: Promoting modularity, testability, and reusability of workflow logic; building complex parent-child function relationships. [See function composition guide](https://www.inngest.com/docs/guides/invoking-functions-directly).
 
 ```typescript
 // Parent workflow
@@ -128,7 +149,9 @@ if (paymentResult.status === "failed") {
 ```
 
 ### `step.parallel` - Concurrent Operations
-Execute multiple asynchronous operations at the same time using [`step.parallel()`](https://www.inngest.com/docs/reference/functions/step-parallel) and wait for all of them to complete before proceeding. This is useful for fetching data from multiple sources, processing items in a collection independently, or any task where operations can run in parallel to speed up execution. Each parallel operation is still a durable step. [See parallel execution guide](https://www.inngest.com/docs/guides/parallel-steps).
+Execute multiple asynchronous operations at the same time using [`step.parallel()`](https://www.inngest.com/docs/reference/functions/step-parallel) and wait for all of them to complete before proceeding. Each parallel operation is still a durable step.
+
+**Ideal for**: Speeding up execution by running independent tasks concurrently, such as fetching data from multiple external APIs, processing items in a collection independently, or performing parallel writes.
 
 ```typescript
 // Example: Enrich user data from multiple APIs
